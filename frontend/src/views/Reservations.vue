@@ -4,14 +4,20 @@
       <template #header>
         <div class="card-header">
           <span>预约管理</span>
-          <el-button 
-            v-permission="'reservation:create'"
-            type="primary" 
-            :icon="Plus" 
-            @click="handleCreate"
-          >
-            新建预约
-          </el-button>
+          <div class="header-actions">
+            <el-radio-group v-model="viewMode" size="small" style="margin-right: 10px;">
+              <el-radio-button value="list">列表视图</el-radio-button>
+              <el-radio-button value="calendar">日历视图</el-radio-button>
+            </el-radio-group>
+            <el-button 
+              v-permission="'reservation:create'"
+              type="primary" 
+              :icon="Plus" 
+              @click="handleCreate"
+            >
+              新建预约
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -43,10 +49,16 @@
         </el-form-item>
       </el-form>
 
-      <!-- 表格 -->
-      <el-table :data="tableData" v-loading="loading" stripe>
+      <!-- 列表视图 -->
+      <div v-if="viewMode === 'list'">
+        <!-- 表格 -->
+        <el-table :data="tableData" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="laboratoryName" label="实验室" />
+        <el-table-column label="实验室">
+          <template #default="{ row }">
+            {{ row.laboratoryName || '未知' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="startTime" label="开始时间" width="180" />
         <el-table-column prop="endTime" label="结束时间" width="180" />
         <el-table-column prop="purpose" label="预约目的" show-overflow-tooltip />
@@ -96,17 +108,46 @@
         </el-table-column>
       </el-table>
 
-      <!-- 分页 -->
-      <el-pagination
-        v-model:current-page="pagination.page"
-        v-model:page-size="pagination.size"
-        :total="pagination.total"
-        :page-sizes="[10, 20, 50, 100]"
-        layout="total, sizes, prev, pager, next, jumper"
-        @size-change="handleSearch"
-        @current-change="handleSearch"
-        class="pagination"
-      />
+        <!-- 分页 -->
+        <el-pagination
+          v-model:current-page="pagination.page"
+          v-model:page-size="pagination.size"
+          :total="pagination.total"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="handleSearch"
+          @current-change="handleSearch"
+          class="pagination"
+        />
+      </div>
+
+      <!-- 日历视图 -->
+      <div v-if="viewMode === 'calendar'" class="calendar-container">
+        <div class="calendar-filters">
+          <el-form :inline="true" :model="calendarFilters" class="calendar-search-form">
+            <el-form-item label="实验室">
+              <el-select v-model="calendarFilters.labId" placeholder="全部实验室" clearable style="width: 200px" @change="loadCalendarEvents">
+                <el-option
+                  v-for="lab in laboratories"
+                  :key="lab.id"
+                  :label="lab.name"
+                  :value="lab.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="状态">
+              <el-select v-model="calendarFilters.status" placeholder="全部状态" clearable style="width: 150px" @change="loadCalendarEvents">
+                <el-option label="待审核" value="PENDING" />
+                <el-option label="已通过" value="APPROVED" />
+                <el-option label="已完成" value="COMPLETED" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+        </div>
+        <div class="calendar-wrapper" v-loading="calendarLoading">
+          <FullCalendar :options="calendarOptions" />
+        </div>
+      </div>
     </el-card>
 
     <!-- 新建/编辑对话框 -->
@@ -144,6 +185,7 @@
             v-model="form.startTime"
             type="datetime"
             placeholder="选择开始时间"
+            :disabled-date="disabledStartDate"
             style="width: 100%"
           />
         </el-form-item>
@@ -152,6 +194,7 @@
             v-model="form.endTime"
             type="datetime"
             placeholder="选择结束时间"
+            :disabled-date="disabledEndDate"
             style="width: 100%"
           />
         </el-form-item>
@@ -199,10 +242,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh, View, Edit, Delete, Check } from '@element-plus/icons-vue'
-import { getReservations, createReservation, updateReservation, deleteReservation } from '../api/reservation'
+import FullCalendar from '@fullcalendar/vue3'
+import dayGridPlugin from '@fullcalendar/daygrid'
+import timeGridPlugin from '@fullcalendar/timegrid'
+import interactionPlugin from '@fullcalendar/interaction'
+import zhCnLocale from '@fullcalendar/core/locales/zh-cn'
+import { getReservations, createReservation, updateReservation, deleteReservation, approveReservation, getReservationCalendar } from '../api/reservation'
 import { getLaboratories } from '../api/laboratory'
 import { useUserStore } from '../stores/user'
 import { hasPermission, ROLES } from '../config/permissions'
@@ -215,6 +263,9 @@ const dialogTitle = ref('新建预约')
 const formRef = ref(null)
 const currentRow = ref({})
 const userStore = useUserStore()
+const viewMode = ref('list') // 'list' 或 'calendar'
+const calendarLoading = ref(false)
+const calendarEvents = ref([])
 
 // 计算当前用户角色
 const userRole = computed(() => userStore.userInfo?.role)
@@ -245,6 +296,41 @@ const pagination = reactive({
 const tableData = ref([])
 
 const laboratories = ref([])
+
+const calendarFilters = reactive({
+  labId: null,
+  status: null
+})
+
+// FullCalendar 配置
+const calendarOptions = computed(() => ({
+  plugins: [dayGridPlugin, timeGridPlugin, interactionPlugin],
+  initialView: 'dayGridMonth',
+  headerToolbar: {
+    left: 'prev,next today',
+    center: 'title',
+    right: 'dayGridMonth,timeGridWeek,timeGridDay'
+  },
+  locale: zhCnLocale,
+  height: 'auto',
+  events: calendarEvents.value,
+  eventClick: handleCalendarEventClick,
+  datesSet: handleCalendarDatesSet,
+  eventDisplay: 'block',
+  eventTimeFormat: {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  },
+  slotMinTime: '06:00:00',
+  slotMaxTime: '24:00:00',
+  allDaySlot: false,
+  weekends: true,
+  editable: false,
+  selectable: false,
+  dayMaxEvents: true,
+  moreLinkClick: 'popover'
+}))
 
 const form = reactive({
   laboratoryId: null,
@@ -293,6 +379,20 @@ const getTypeText = (type) => {
   return textMap[type] || type
 }
 
+// 禁用过去的日期（开始时间）
+const disabledStartDate = (time) => {
+  return time.getTime() < Date.now() - 24 * 60 * 60 * 1000 // 禁用今天之前的日期
+}
+
+// 禁用过去的日期（结束时间）
+const disabledEndDate = (time) => {
+  if (form.startTime) {
+    // 结束时间不能早于开始时间
+    return time.getTime() < new Date(form.startTime).getTime()
+  }
+  return time.getTime() < Date.now() - 24 * 60 * 60 * 1000
+}
+
 const handleSearch = async () => {
   loading.value = true
   try {
@@ -300,18 +400,41 @@ const handleSearch = async () => {
       current: pagination.page,
       size: pagination.size,
       laboratoryName: searchForm.laboratoryName || undefined,
-      status: searchForm.status || undefined,
-      startDate: searchForm.date?.[0] || undefined,
-      endDate: searchForm.date?.[1] || undefined
+      status: searchForm.status || undefined
     }
+    
+    // 处理日期范围
+    if (searchForm.date && searchForm.date.length === 2) {
+      // 格式化日期为字符串
+      const startDate = new Date(searchForm.date[0])
+      const endDate = new Date(searchForm.date[1])
+      params.startDate = startDate.toISOString().split('T')[0]
+      params.endDate = endDate.toISOString().split('T')[0]
+    }
+    
     const response = await getReservations(params)
-    if (response.data) {
-      tableData.value = response.data.records || response.data.list || response.data
-      pagination.total = response.data.total || tableData.value.length
+    console.log('预约数据响应:', response)
+    if (response && response.data) {
+      const pageData = response.data
+      if (pageData.records && pageData.records.length > 0) {
+        tableData.value = pageData.records
+        pagination.total = pageData.total || 0
+      } else if (Array.isArray(pageData)) {
+        tableData.value = pageData
+        pagination.total = pageData.length
+      } else {
+        tableData.value = []
+        pagination.total = 0
+      }
+    } else {
+      tableData.value = []
+      pagination.total = 0
     }
   } catch (error) {
     console.error('获取预约列表失败:', error)
-    ElMessage.error('获取预约列表失败')
+    ElMessage.error('获取预约列表失败: ' + (error.message || '未知错误'))
+    tableData.value = []
+    pagination.total = 0
   } finally {
     loading.value = false
   }
@@ -333,12 +456,12 @@ const handleEdit = (row) => {
   dialogTitle.value = '编辑预约'
   currentRow.value = row
   Object.assign(form, {
-    laboratoryId: row.laboratoryId,
+    laboratoryId: row.labId || row.laboratoryId,
     type: row.type,
-    startTime: row.startTime,
-    endTime: row.endTime,
+    startTime: row.startTime ? new Date(row.startTime) : '',
+    endTime: row.endTime ? new Date(row.endTime) : '',
     purpose: row.purpose,
-    participantCount: row.participantCount
+    participantCount: row.participantCount || 1
   })
   dialogVisible.value = true
 }
@@ -370,25 +493,32 @@ const handleCancel = (row) => {
   handleDelete(row)
 }
 
-const handleApprove = (row) => {
-  ElMessageBox.confirm('确定要审批此预约吗？', '审批预约', {
-    confirmButtonText: '通过',
-    cancelButtonText: '拒绝',
-    distinguishCancelAndClose: true,
-    type: 'info'
-  }).then(() => {
+const handleApprove = async (row) => {
+  try {
+    const result = await ElMessageBox.confirm('确定要审批此预约吗？', '审批预约', {
+      confirmButtonText: '通过',
+      cancelButtonText: '拒绝',
+      distinguishCancelAndClose: true,
+      type: 'info'
+    })
+    
     // 通过审批
+    await approveReservation(row.id, true, '')
     ElMessage.success('审批通过')
-    row.status = 'APPROVED'
-    handleSearch()
-  }).catch((action) => {
+    await handleSearch()
+  } catch (action) {
     if (action === 'cancel') {
       // 拒绝审批
-      ElMessage.info('已拒绝')
-      row.status = 'REJECTED'
-      handleSearch()
+      try {
+        await approveReservation(row.id, false, '')
+        ElMessage.info('已拒绝')
+        await handleSearch()
+      } catch (error) {
+        console.error('拒绝审批失败:', error)
+        ElMessage.error('拒绝审批失败')
+      }
     }
-  })
+  }
 }
 
 const handleSubmit = async () => {
@@ -396,13 +526,77 @@ const handleSubmit = async () => {
     if (valid) {
       submitting.value = true
       try {
+        // 格式化日期时间为后端期望的格式 (yyyy-MM-dd HH:mm:ss)
+        const formatDateTime = (date) => {
+          if (!date) return null
+          
+          let dateObj
+          if (typeof date === 'string') {
+            // 如果是字符串，转换为Date对象
+            dateObj = new Date(date)
+            if (isNaN(dateObj.getTime())) {
+              // 如果无法解析，尝试直接返回（可能是已格式化的字符串）
+              return date
+            }
+          } else if (date instanceof Date) {
+            dateObj = date
+          } else {
+            return date
+          }
+          
+          // 格式化为 yyyy-MM-dd HH:mm:ss
+          const year = dateObj.getFullYear()
+          const month = String(dateObj.getMonth() + 1).padStart(2, '0')
+          const day = String(dateObj.getDate()).padStart(2, '0')
+          const hours = String(dateObj.getHours()).padStart(2, '0')
+          const minutes = String(dateObj.getMinutes()).padStart(2, '0')
+          const seconds = String(dateObj.getSeconds()).padStart(2, '0')
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+        }
+        
+        // 验证日期
+        if (!form.startTime || !form.endTime) {
+          ElMessage.error('请选择开始时间和结束时间')
+          submitting.value = false
+          return
+        }
+        
+        const startTime = formatDateTime(form.startTime)
+        const endTime = formatDateTime(form.endTime)
+        
+        // 验证时间逻辑
+        if (new Date(form.startTime) >= new Date(form.endTime)) {
+          ElMessage.error('结束时间必须晚于开始时间')
+          submitting.value = false
+          return
+        }
+        
         const submitData = {
-          laboratoryId: form.laboratoryId,
-          type: form.type,
-          startTime: form.startTime,
-          endTime: form.endTime,
+          labId: form.laboratoryId,  // 后端期望的是labId，不是laboratoryId
+          type: form.type || 'SINGLE',
+          startTime: startTime,
+          endTime: endTime,
           purpose: form.purpose,
-          participantCount: form.participantCount
+          participantCount: form.participantCount || 1
+        }
+        
+        console.log('提交预约数据:', JSON.stringify(submitData, null, 2))
+        
+        // 验证必填字段
+        if (!submitData.labId) {
+          ElMessage.error('请选择实验室')
+          submitting.value = false
+          return
+        }
+        if (!submitData.startTime || !submitData.endTime) {
+          ElMessage.error('请选择开始时间和结束时间')
+          submitting.value = false
+          return
+        }
+        if (!submitData.purpose || submitData.purpose.trim() === '') {
+          ElMessage.error('请输入预约目的')
+          submitting.value = false
+          return
         }
         
         if (dialogTitle.value === '新建预约') {
@@ -416,9 +610,68 @@ const handleSubmit = async () => {
         dialogVisible.value = false
         // 重新加载列表数据
         await handleSearch()
+        // 如果当前是日历视图，也重新加载日历数据
+        if (viewMode.value === 'calendar') {
+          loadCalendarEvents()
+        }
       } catch (error) {
         console.error('提交失败:', error)
-        ElMessage.error(error.message || '操作失败')
+        console.error('错误详情:', {
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          message: error.message
+        })
+        // 打印完整的响应数据以便调试
+        if (error.response?.data) {
+          console.error('响应数据:', JSON.stringify(error.response.data, null, 2))
+        }
+        
+        let errorMessage = '操作失败'
+        if (error.response) {
+          // 有响应但状态码不是2xx
+          const responseData = error.response.data
+          if (responseData) {
+            // 优先使用message字段（我们的Result类格式）
+            if (responseData.message) {
+              errorMessage = responseData.message
+            } 
+            // 检查其他可能的错误字段
+            else if (responseData.error) {
+              errorMessage = responseData.error
+            } 
+            // 如果是字符串
+            else if (typeof responseData === 'string') {
+              errorMessage = responseData
+            }
+            // 如果是数组（验证错误可能是数组格式）
+            else if (Array.isArray(responseData)) {
+              errorMessage = responseData.join('; ')
+            }
+            // 尝试获取所有字段的错误
+            else {
+              const errorParts = []
+              for (const key in responseData) {
+                if (responseData.hasOwnProperty(key)) {
+                  errorParts.push(`${key}: ${responseData[key]}`)
+                }
+              }
+              if (errorParts.length > 0) {
+                errorMessage = errorParts.join('; ')
+              }
+            }
+          } else {
+            errorMessage = `请求失败: ${error.response.status} ${error.response.statusText}`
+          }
+        } else if (error.request) {
+          // 请求已发出但没有收到响应
+          errorMessage = '网络错误，请检查后端服务是否运行'
+        } else {
+          // 请求配置出错
+          errorMessage = error.message || '请求配置错误'
+        }
+        
+        ElMessage.error(errorMessage)
       } finally {
         submitting.value = false
       }
@@ -430,6 +683,93 @@ const handleDialogClose = () => {
   formRef.value?.resetFields()
   currentRow.value = {}
 }
+
+// 加载日历事件
+const loadCalendarEvents = async (start, end) => {
+  calendarLoading.value = true
+  try {
+    const params = {}
+    
+    // 如果提供了日期范围，使用提供的；否则使用当前视图的日期范围
+    if (start && end) {
+      params.start = start.split('T')[0]
+      params.end = end.split('T')[0]
+    }
+    
+    if (calendarFilters.labId) {
+      params.labId = calendarFilters.labId
+    }
+    
+    if (calendarFilters.status) {
+      params.status = calendarFilters.status
+    }
+    
+    const response = await getReservationCalendar(params)
+    
+    if (response && response.data) {
+      // 转换数据格式为 FullCalendar 需要的格式
+      calendarEvents.value = response.data.map(event => ({
+        id: event.id.toString(),
+        title: event.title || `${event.laboratoryName || '未知实验室'} - ${event.purpose || '预约'}`,
+        start: event.start,
+        end: event.end,
+        backgroundColor: event.backgroundColor || event.color,
+        borderColor: event.borderColor || event.color,
+        textColor: event.textColor || '#000',
+        extendedProps: {
+          labId: event.labId,
+          laboratoryName: event.laboratoryName,
+          status: event.status,
+          type: event.type,
+          purpose: event.purpose,
+          reservationId: event.id
+        }
+      }))
+    } else {
+      calendarEvents.value = []
+    }
+  } catch (error) {
+    console.error('加载日历事件失败:', error)
+    ElMessage.error('加载日历事件失败: ' + (error.message || '未知错误'))
+    calendarEvents.value = []
+  } finally {
+    calendarLoading.value = false
+  }
+}
+
+// 日历日期范围变化
+const handleCalendarDatesSet = (info) => {
+  const start = info.start.toISOString().split('T')[0]
+  const end = info.end.toISOString().split('T')[0]
+  loadCalendarEvents(start, end)
+}
+
+// 日历事件点击
+const handleCalendarEventClick = (info) => {
+  const event = info.event
+  const extendedProps = event.extendedProps
+  
+  // 查找对应的预约数据
+  const reservation = {
+    id: extendedProps.reservationId,
+    laboratoryName: extendedProps.laboratoryName,
+    startTime: event.start.toISOString(),
+    endTime: event.end ? event.end.toISOString() : '',
+    status: extendedProps.status,
+    type: extendedProps.type,
+    purpose: extendedProps.purpose
+  }
+  
+  handleView(reservation)
+}
+
+// 监听视图模式变化
+watch(viewMode, (newMode) => {
+  if (newMode === 'calendar') {
+    // 切换到日历视图时，加载日历数据
+    loadCalendarEvents()
+  }
+})
 
 onMounted(async () => {
   // 加载实验室列表
@@ -444,6 +784,11 @@ onMounted(async () => {
   
   // 加载预约列表
   await handleSearch()
+  
+  // 如果默认是日历视图，加载日历数据
+  if (viewMode.value === 'calendar') {
+    loadCalendarEvents()
+  }
 })
 </script>
 
@@ -463,6 +808,50 @@ onMounted(async () => {
   margin-top: 20px;
   display: flex;
   justify-content: flex-end;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+}
+
+.calendar-container {
+  margin-top: 20px;
+}
+
+.calendar-filters {
+  margin-bottom: 20px;
+}
+
+.calendar-search-form {
+  margin-bottom: 0;
+}
+
+.calendar-wrapper {
+  min-height: 600px;
+}
+
+/* FullCalendar 样式调整 */
+:deep(.fc) {
+  font-family: inherit;
+}
+
+:deep(.fc-event) {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+:deep(.fc-event:hover) {
+  opacity: 0.8;
+}
+
+:deep(.fc-daygrid-event) {
+  white-space: normal;
+  word-wrap: break-word;
+}
+
+:deep(.fc-timegrid-event) {
+  border-radius: 4px;
 }
 </style>
 

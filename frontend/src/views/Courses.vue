@@ -34,7 +34,11 @@
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="name" label="课程名称" />
         <el-table-column prop="code" label="课程代码" width="120" />
-        <el-table-column prop="teacher" label="授课教师" />
+        <el-table-column label="授课教师">
+          <template #default="{ row }">
+            {{ teachers.find(t => t.id === row.teacherId)?.name || row.teacherId || '未知' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="semester" label="学期" width="120" />
         <el-table-column prop="studentCount" label="学生人数" width="100" />
         <el-table-column label="操作" width="200" fixed="right">
@@ -96,8 +100,15 @@
         <el-form-item label="课程代码" prop="code">
           <el-input v-model="form.code" placeholder="请输入课程代码" />
         </el-form-item>
-        <el-form-item label="授课教师" prop="teacher">
-          <el-input v-model="form.teacher" placeholder="请输入授课教师" />
+        <el-form-item label="授课教师" prop="teacherId">
+          <el-select v-model="form.teacherId" placeholder="请选择授课教师" style="width: 100%">
+            <el-option
+              v-for="teacher in teachers"
+              :key="teacher.id"
+              :label="teacher.name"
+              :value="teacher.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="学期" prop="semester">
           <el-input v-model="form.semester" placeholder="如：2024-2025学年第一学期" />
@@ -128,7 +139,9 @@
         <el-descriptions-item label="课程ID">{{ currentRow.id }}</el-descriptions-item>
         <el-descriptions-item label="课程名称">{{ currentRow.name }}</el-descriptions-item>
         <el-descriptions-item label="课程代码">{{ currentRow.code }}</el-descriptions-item>
-        <el-descriptions-item label="授课教师">{{ currentRow.teacher }}</el-descriptions-item>
+        <el-descriptions-item label="授课教师">
+          {{ teachers.find(t => t.id === currentRow.teacherId)?.name || currentRow.teacherId || '未知' }}
+        </el-descriptions-item>
         <el-descriptions-item label="学期">{{ currentRow.semester }}</el-descriptions-item>
         <el-descriptions-item label="学生人数">{{ currentRow.studentCount }}</el-descriptions-item>
         <el-descriptions-item label="课程描述" :span="2">
@@ -143,6 +156,8 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh, View, Edit, Delete } from '@element-plus/icons-vue'
+import { getCourses, createCourse, updateCourse, deleteCourse } from '../api/course'
+import { getUsers } from '../api/user'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -151,6 +166,7 @@ const detailVisible = ref(false)
 const dialogTitle = ref('添加课程')
 const formRef = ref(null)
 const currentRow = ref({})
+const teachers = ref([])
 
 const searchForm = reactive({
   name: '',
@@ -196,7 +212,7 @@ const tableData = ref([
 const form = reactive({
   name: '',
   code: '',
-  teacher: '',
+  teacherId: null,
   semester: '',
   studentCount: 30,
   description: ''
@@ -205,21 +221,42 @@ const form = reactive({
 const rules = {
   name: [{ required: true, message: '请输入课程名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入课程代码', trigger: 'blur' }],
-  teacher: [{ required: true, message: '请输入授课教师', trigger: 'blur' }],
+  teacherId: [{ required: true, message: '请选择授课教师', trigger: 'change' }],
   semester: [{ required: true, message: '请输入学期', trigger: 'blur' }],
   studentCount: [{ required: true, message: '请输入学生人数', trigger: 'blur' }]
 }
 
-const handleSearch = () => {
+const handleSearch = async () => {
   loading.value = true
-  setTimeout(() => {
+  try {
+    const params = {
+      current: pagination.page,
+      size: pagination.size,
+      name: searchForm.name || undefined,
+      teacher: searchForm.teacher || undefined
+    }
+    const response = await getCourses(params)
+    console.log('课程数据:', response)
+    if (response && response.data) {
+      const pageData = response.data
+      // 如果后端有数据就用后端的，否则保留静态数据
+      if (pageData.records && pageData.records.length > 0) {
+        tableData.value = pageData.records
+        pagination.total = pageData.total || 0
+      }
+    }
+  } catch (error) {
+    console.error('获取课程列表失败:', error)
+    // 出错时保留静态数据
+  } finally {
     loading.value = false
-  }, 500)
+  }
 }
 
 const handleReset = () => {
   searchForm.name = ''
   searchForm.teacher = ''
+  pagination.page = 1
   handleSearch()
 }
 
@@ -231,7 +268,14 @@ const handleCreate = () => {
 const handleEdit = (row) => {
   dialogTitle.value = '编辑课程'
   currentRow.value = row
-  Object.assign(form, row)
+  Object.assign(form, {
+    name: row.name,
+    code: row.code,
+    teacherId: row.teacherId,
+    semester: row.semester,
+    studentCount: row.studentCount,
+    description: row.description
+  })
   dialogVisible.value = true
 }
 
@@ -240,15 +284,22 @@ const handleView = (row) => {
   detailVisible.value = true
 }
 
-const handleDelete = (row) => {
-  ElMessageBox.confirm('确定要删除此课程吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除此课程吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await deleteCourse(row.id)
     ElMessage.success('删除成功')
-    handleSearch()
-  }).catch(() => {})
+    await handleSearch()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除课程失败:', error)
+      ElMessage.error('删除课程失败')
+    }
+  }
 }
 
 const handleSubmit = async () => {
@@ -256,12 +307,28 @@ const handleSubmit = async () => {
     if (valid) {
       submitting.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        ElMessage.success(dialogTitle.value === '添加课程' ? '添加成功' : '更新成功')
+        const submitData = {
+          name: form.name,
+          code: form.code,
+          teacherId: form.teacherId,
+          semester: form.semester,
+          studentCount: form.studentCount,
+          description: form.description
+        }
+        
+        if (dialogTitle.value === '添加课程') {
+          await createCourse(submitData)
+          ElMessage.success('添加成功')
+        } else {
+          await updateCourse(currentRow.value.id, submitData)
+          ElMessage.success('更新成功')
+        }
+        
         dialogVisible.value = false
-        handleSearch()
+        await handleSearch()
       } catch (error) {
-        console.error(error)
+        console.error('提交失败:', error)
+        ElMessage.error(error.message || '操作失败')
       } finally {
         submitting.value = false
       }
@@ -271,11 +338,37 @@ const handleSubmit = async () => {
 
 const handleDialogClose = () => {
   formRef.value?.resetFields()
+  Object.assign(form, {
+    name: '',
+    code: '',
+    teacherId: null,
+    semester: '',
+    studentCount: 30,
+    description: ''
+  })
   currentRow.value = {}
 }
 
-onMounted(() => {
-  handleSearch()
+// 加载教师列表
+const loadTeachers = async () => {
+  try {
+    const response = await getUsers({ role: 'TEACHER', current: 1, size: 100 })
+    if (response && response.data) {
+      const pageData = response.data
+      if (pageData.records && pageData.records.length > 0) {
+        teachers.value = pageData.records
+      } else if (Array.isArray(pageData)) {
+        teachers.value = pageData.filter(u => u.role === 'TEACHER')
+      }
+    }
+  } catch (error) {
+    console.error('获取教师列表失败:', error)
+  }
+}
+
+onMounted(async () => {
+  await loadTeachers()
+  await handleSearch()
 })
 </script>
 

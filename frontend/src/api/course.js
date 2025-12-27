@@ -2,7 +2,7 @@ import request from './request'
 
 export const getCourses = (params) => {
     return request({
-        url: '/courses',
+        url: '/course/page',
         method: 'get',
         params
     })
@@ -10,7 +10,7 @@ export const getCourses = (params) => {
 
 export const createCourse = (data) => {
     return request({
-        url: '/courses',
+        url: '/course',
         method: 'post',
         data
     })
@@ -18,7 +18,7 @@ export const createCourse = (data) => {
 
 export const updateCourse = (id, data) => {
     return request({
-        url: `/courses/${id}`,
+        url: `/course/${id}`,
         method: 'put',
         data
     })
@@ -26,7 +26,7 @@ export const updateCourse = (id, data) => {
 
 export const deleteCourse = (id) => {
     return request({
-        url: `/courses/${id}`,
+        url: `/course/${id}`,
         method: 'delete'
     })
 }

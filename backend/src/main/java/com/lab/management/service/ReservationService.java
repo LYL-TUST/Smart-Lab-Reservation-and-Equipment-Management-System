@@ -2,9 +2,11 @@ package com.lab.management.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.lab.management.dto.CalendarReservationDTO;
 import com.lab.management.dto.ConflictResult;
 import com.lab.management.dto.ReservationDTO;
 import com.lab.management.dto.ReservationQueryDTO;
+import com.lab.management.entity.Laboratory;
 import com.lab.management.entity.Reservation;
 import com.lab.management.enums.ReservationStatus;
 import com.lab.management.enums.ReservationType;
@@ -29,6 +31,15 @@ public class ReservationService {
     
     private final ReservationMapper reservationMapper;
     private final ConflictDetectionService conflictDetectionService;
+    private final LaboratoryService laboratoryService;
+    
+    /**
+     * 统计预约总数
+     */
+    public long count() {
+        LambdaQueryWrapper<Reservation> wrapper = new LambdaQueryWrapper<>();
+        return reservationMapper.selectCount(wrapper);
+    }
     
     /**
      * 分页查询预约
@@ -39,9 +50,22 @@ public class ReservationService {
         Page<Reservation> page = new Page<>(queryDTO.getCurrent(), queryDTO.getSize());
         LambdaQueryWrapper<Reservation> wrapper = new LambdaQueryWrapper<>();
         
-        if (queryDTO.getLabId() != null) {
+        // 如果提供了实验室名称，先查询实验室ID
+        if (StringUtils.hasText(queryDTO.getLaboratoryName())) {
+            Page<Laboratory> labPage = laboratoryService.page(1, 100, queryDTO.getLaboratoryName(), null, null);
+            if (labPage.getRecords().isEmpty()) {
+                // 如果没有找到实验室，返回空结果
+                return page;
+            }
+            // 获取所有匹配的实验室ID
+            List<Long> labIds = labPage.getRecords().stream()
+                    .map(Laboratory::getId)
+                    .collect(java.util.stream.Collectors.toList());
+            wrapper.in(Reservation::getLabId, labIds);
+        } else if (queryDTO.getLabId() != null) {
             wrapper.eq(Reservation::getLabId, queryDTO.getLabId());
         }
+        
         if (StringUtils.hasText(queryDTO.getStatus())) {
             wrapper.eq(Reservation::getStatus, queryDTO.getStatus());
         }
@@ -79,7 +103,22 @@ public class ReservationService {
      */
     @Transactional(rollbackFor = Exception.class)
     public Reservation createSingleReservation(ReservationDTO dto, Long userId) {
-        log.info("创建单次预约: userId={}, labId={}", userId, dto.getLabId());
+        log.info("创建单次预约: userId={}, labId={}, startTime={}, endTime={}", 
+            userId, dto.getLabId(), dto.getStartTime(), dto.getEndTime());
+        
+        // 验证必填字段
+        if (dto.getLabId() == null) {
+            throw new RuntimeException("实验室不能为空");
+        }
+        if (dto.getStartTime() == null) {
+            throw new RuntimeException("开始时间不能为空");
+        }
+        if (dto.getEndTime() == null) {
+            throw new RuntimeException("结束时间不能为空");
+        }
+        if (dto.getStartTime().isAfter(dto.getEndTime())) {
+            throw new RuntimeException("开始时间不能晚于结束时间");
+        }
         
         dto.setUserId(userId);
         dto.setType(ReservationType.SINGLE.name());
@@ -346,6 +385,53 @@ public class ReservationService {
     }
     
     /**
+     * 更新预约（仅限待审核状态）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Reservation updateReservation(Long id, ReservationDTO dto, Long userId) {
+        log.info("更新预约: id={}, userId={}", id, userId);
+        
+        Reservation reservation = reservationMapper.selectById(id);
+        if (reservation == null) {
+            throw new RuntimeException("预约不存在");
+        }
+        
+        if (!reservation.getUserId().equals(userId)) {
+            throw new RuntimeException("只能修改自己的预约");
+        }
+        
+        if (!ReservationStatus.PENDING.name().equals(reservation.getStatus())) {
+            throw new RuntimeException("只能修改待审核状态的预约");
+        }
+        
+        // 冲突检测
+        dto.setLabId(reservation.getLabId()); // 保持原实验室ID
+        ConflictResult conflictResult = conflictDetectionService.detectConflict(dto);
+        if (conflictResult.getHasConflict()) {
+            throw new RuntimeException(conflictResult.getMessage());
+        }
+        
+        // 更新预约信息
+        if (dto.getStartTime() != null) {
+            reservation.setStartTime(dto.getStartTime());
+        }
+        if (dto.getEndTime() != null) {
+            reservation.setEndTime(dto.getEndTime());
+        }
+        if (StringUtils.hasText(dto.getPurpose())) {
+            reservation.setPurpose(dto.getPurpose());
+        }
+        if (dto.getParticipantCount() != null) {
+            reservation.setParticipantCount(dto.getParticipantCount());
+        }
+        
+        reservationMapper.updateById(reservation);
+        log.info("预约更新成功: id={}", id);
+        
+        return reservation;
+    }
+    
+    /**
      * 获取用户的预约列表
      */
     public Page<Reservation> getUserReservations(Long userId, Integer current, Integer size) {
@@ -357,6 +443,130 @@ public class ReservationService {
                .orderByDesc(Reservation::getCreatedAt);
         
         return reservationMapper.selectPage(page, wrapper);
+    }
+    
+    /**
+     * 获取日历视图的预约数据
+     * @param startDate 开始日期（可选）
+     * @param endDate 结束日期（可选）
+     * @param labId 实验室ID（可选）
+     * @param status 状态（可选）
+     * @return 日历事件列表
+     */
+    public List<CalendarReservationDTO> getCalendarReservations(String startDate, String endDate, Long labId, String status) {
+        log.info("获取日历预约数据: startDate={}, endDate={}, labId={}, status={}", startDate, endDate, labId, status);
+        
+        LambdaQueryWrapper<Reservation> wrapper = new LambdaQueryWrapper<>();
+        
+        // 如果提供了实验室ID，过滤
+        if (labId != null) {
+            wrapper.eq(Reservation::getLabId, labId);
+        }
+        
+        // 如果提供了状态，过滤（默认只显示已通过和待审核的）
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(Reservation::getStatus, status);
+        } else {
+            // 默认只显示有效的预约（待审核、已通过、已完成）
+            wrapper.in(Reservation::getStatus, 
+                ReservationStatus.PENDING.name(),
+                ReservationStatus.APPROVED.name(),
+                ReservationStatus.COMPLETED.name()
+            );
+        }
+        
+        // 日期范围过滤
+        if (StringUtils.hasText(startDate)) {
+            LocalDateTime start = LocalDateTime.parse(startDate + "T00:00:00");
+            wrapper.ge(Reservation::getStartTime, start);
+        }
+        if (StringUtils.hasText(endDate)) {
+            LocalDateTime end = LocalDateTime.parse(endDate + "T23:59:59");
+            wrapper.le(Reservation::getEndTime, end);
+        }
+        
+        wrapper.orderByAsc(Reservation::getStartTime);
+        
+        List<Reservation> reservations = reservationMapper.selectList(wrapper);
+        
+        // 转换为日历DTO
+        List<CalendarReservationDTO> calendarEvents = new ArrayList<>();
+        for (Reservation reservation : reservations) {
+            CalendarReservationDTO event = new CalendarReservationDTO();
+            event.setId(reservation.getId());
+            event.setStart(reservation.getStartTime());
+            event.setEnd(reservation.getEndTime());
+            event.setLabId(reservation.getLabId() != null ? reservation.getLabId().toString() : null);
+            event.setStatus(reservation.getStatus());
+            event.setType(reservation.getType());
+            event.setPurpose(reservation.getPurpose());
+            event.setAllDay(false);  // 预约不是全天事件
+            
+            // 获取实验室名称
+            if (reservation.getLabId() != null) {
+                Laboratory laboratory = laboratoryService.getById(reservation.getLabId());
+                if (laboratory != null) {
+                    event.setLaboratoryName(laboratory.getName());
+                    // 设置标题：实验室名称 + 预约目的
+                    String title = laboratory.getName();
+                    if (StringUtils.hasText(reservation.getPurpose())) {
+                        title += " - " + reservation.getPurpose();
+                    }
+                    event.setTitle(title);
+                } else {
+                    event.setLaboratoryName("未知实验室");
+                    event.setTitle("未知实验室" + (StringUtils.hasText(reservation.getPurpose()) ? " - " + reservation.getPurpose() : ""));
+                }
+            } else {
+                event.setLaboratoryName("未知实验室");
+                event.setTitle("未知实验室" + (StringUtils.hasText(reservation.getPurpose()) ? " - " + reservation.getPurpose() : ""));
+            }
+            
+            // 根据状态设置颜色
+            String statusStr = reservation.getStatus();
+            if (ReservationStatus.PENDING.name().equals(statusStr)) {
+                // 待审核 - 黄色
+                event.setColor("#f39c12");
+                event.setBackgroundColor("#fff3cd");
+                event.setBorderColor("#f39c12");
+                event.setTextColor("#856404");
+            } else if (ReservationStatus.APPROVED.name().equals(statusStr)) {
+                // 已通过 - 绿色
+                event.setColor("#28a745");
+                event.setBackgroundColor("#d4edda");
+                event.setBorderColor("#28a745");
+                event.setTextColor("#155724");
+            } else if (ReservationStatus.REJECTED.name().equals(statusStr)) {
+                // 已拒绝 - 红色
+                event.setColor("#dc3545");
+                event.setBackgroundColor("#f8d7da");
+                event.setBorderColor("#dc3545");
+                event.setTextColor("#721c24");
+            } else if (ReservationStatus.COMPLETED.name().equals(statusStr)) {
+                // 已完成 - 蓝色
+                event.setColor("#007bff");
+                event.setBackgroundColor("#cce5ff");
+                event.setBorderColor("#007bff");
+                event.setTextColor("#004085");
+            } else if (ReservationStatus.CANCELLED.name().equals(statusStr)) {
+                // 已取消 - 灰色
+                event.setColor("#6c757d");
+                event.setBackgroundColor("#e2e3e5");
+                event.setBorderColor("#6c757d");
+                event.setTextColor("#383d41");
+            } else {
+                // 默认颜色
+                event.setColor("#6c757d");
+                event.setBackgroundColor("#e2e3e5");
+                event.setBorderColor("#6c757d");
+                event.setTextColor("#383d41");
+            }
+            
+            calendarEvents.add(event);
+        }
+        
+        log.info("返回日历事件数量: {}", calendarEvents.size());
+        return calendarEvents;
     }
 }
 

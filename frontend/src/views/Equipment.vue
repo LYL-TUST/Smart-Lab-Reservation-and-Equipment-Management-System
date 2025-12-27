@@ -21,11 +21,12 @@
           <el-input v-model="searchForm.name" placeholder="请输入设备名称" clearable />
         </el-form-item>
         <el-form-item label="状态">
-          <el-select v-model="searchForm.status" placeholder="请选择状态" clearable>
-            <el-option label="正常" value="NORMAL" />
+            <el-select v-model="searchForm.status" placeholder="请选择状态" clearable>
+            <el-option label="空闲" value="IDLE" />
+            <el-option label="已预约" value="RESERVED" />
             <el-option label="使用中" value="IN_USE" />
             <el-option label="维护中" value="MAINTENANCE" />
-            <el-option label="损坏" value="BROKEN" />
+            <el-option label="报废" value="SCRAPPED" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -136,10 +137,11 @@
         </el-form-item>
         <el-form-item label="状态" prop="status">
           <el-select v-model="form.status" placeholder="请选择状态" style="width: 100%">
-            <el-option label="正常" value="NORMAL" />
+            <el-option label="空闲" value="IDLE" />
+            <el-option label="已预约" value="RESERVED" />
             <el-option label="使用中" value="IN_USE" />
             <el-option label="维护中" value="MAINTENANCE" />
-            <el-option label="损坏" value="BROKEN" />
+            <el-option label="报废" value="SCRAPPED" />
           </el-select>
         </el-form-item>
         <el-form-item label="描述" prop="description">
@@ -213,6 +215,8 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh, View, Edit, Delete, Tools } from '@element-plus/icons-vue'
+import { getEquipment, createEquipment, updateEquipment, deleteEquipment } from '../api/equipment'
+import { getLaboratories } from '../api/laboratory'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -234,41 +238,9 @@ const pagination = reactive({
   total: 50
 })
 
-const tableData = ref([
-  {
-    id: 1,
-    name: '高性能计算机',
-    model: 'Dell OptiPlex 7090',
-    laboratoryName: '计算机实验室A',
-    purchaseDate: '2023-01-15',
-    status: 'NORMAL',
-    description: 'Intel i7处理器，16GB内存'
-  },
-  {
-    id: 2,
-    name: '示波器',
-    model: 'Tektronix TBS2000',
-    laboratoryName: '物理实验室B',
-    purchaseDate: '2022-06-20',
-    status: 'IN_USE',
-    description: '数字存储示波器'
-  },
-  {
-    id: 3,
-    name: '离心机',
-    model: 'Eppendorf 5424R',
-    laboratoryName: '化学实验室C',
-    purchaseDate: '2023-03-10',
-    status: 'MAINTENANCE',
-    description: '冷冻离心机'
-  }
-])
+const tableData = ref([])
 
-const laboratories = ref([
-  { id: 1, name: '计算机实验室A' },
-  { id: 2, name: '物理实验室B' },
-  { id: 3, name: '化学实验室C' }
-])
+const laboratories = ref([])
 
 const maintenanceRecords = ref([
   {
@@ -292,7 +264,7 @@ const form = reactive({
   model: '',
   laboratoryId: null,
   purchaseDate: '',
-  status: 'NORMAL',
+  status: 'IDLE',
   description: ''
 })
 
@@ -306,34 +278,60 @@ const rules = {
 
 const getStatusType = (status) => {
   const typeMap = {
-    'NORMAL': 'success',
+    'IDLE': 'success',
+    'RESERVED': 'info',
     'IN_USE': 'warning',
     'MAINTENANCE': 'info',
-    'BROKEN': 'danger'
+    'SCRAPPED': 'danger'
   }
   return typeMap[status] || 'info'
 }
 
 const getStatusText = (status) => {
   const textMap = {
-    'NORMAL': '正常',
+    'IDLE': '空闲',
+    'RESERVED': '已预约',
     'IN_USE': '使用中',
     'MAINTENANCE': '维护中',
-    'BROKEN': '损坏'
+    'SCRAPPED': '报废'
   }
   return textMap[status] || status
 }
 
-const handleSearch = () => {
+const handleSearch = async () => {
   loading.value = true
-  setTimeout(() => {
+  try {
+    const params = {
+      current: pagination.page,
+      size: pagination.size,
+      name: searchForm.name || undefined,
+      status: searchForm.status || undefined
+    }
+    const response = await getEquipment(params)
+    console.log('设备数据:', response)
+    if (response && response.data) {
+      const pageData = response.data
+      // 使用后端返回的数据
+      tableData.value = pageData.records || []
+      pagination.total = pageData.total || 0
+    } else {
+      tableData.value = []
+      pagination.total = 0
+    }
+  } catch (error) {
+    console.error('获取设备列表失败:', error)
+    ElMessage.error('获取设备列表失败')
+    tableData.value = []
+    pagination.total = 0
+  } finally {
     loading.value = false
-  }, 500)
+  }
 }
 
 const handleReset = () => {
   searchForm.name = ''
   searchForm.status = ''
+  pagination.page = 1
   handleSearch()
 }
 
@@ -345,7 +343,14 @@ const handleCreate = () => {
 const handleEdit = (row) => {
   dialogTitle.value = '编辑设备'
   currentRow.value = row
-  Object.assign(form, row)
+  Object.assign(form, {
+    name: row.name,
+    model: row.model,
+    laboratoryId: row.labId || row.laboratoryId,  // 后端返回的是labId
+    purchaseDate: row.purchaseDate,
+    status: row.status,
+    description: row.description
+  })
   dialogVisible.value = true
 }
 
@@ -363,15 +368,22 @@ const handleAddMaintenance = () => {
   ElMessage.info('添加维护记录功能开发中...')
 }
 
-const handleDelete = (row) => {
-  ElMessageBox.confirm('确定要删除此设备吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除此设备吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await deleteEquipment(row.id)
     ElMessage.success('删除成功')
-    handleSearch()
-  }).catch(() => {})
+    await handleSearch()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除设备失败:', error)
+      ElMessage.error('删除设备失败')
+    }
+  }
 }
 
 const handleSubmit = async () => {
@@ -379,12 +391,31 @@ const handleSubmit = async () => {
     if (valid) {
       submitting.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        ElMessage.success(dialogTitle.value === '添加设备' ? '添加成功' : '更新成功')
+        const submitData = {
+          name: form.name,
+          model: form.model,
+          labId: form.laboratoryId,  // 后端期望的是labId
+          purchaseDate: form.purchaseDate,
+          status: form.status,
+          description: form.description
+        }
+        
+        if (dialogTitle.value === '添加设备') {
+          await createEquipment(submitData)
+          ElMessage.success('添加成功')
+        } else {
+          await updateEquipment(currentRow.value.id, submitData)
+          ElMessage.success('更新成功')
+        }
+        
         dialogVisible.value = false
-        handleSearch()
+        await handleSearch()
       } catch (error) {
-        console.error(error)
+        console.error('提交失败:', error)
+        console.error('错误详情:', error.response?.data)
+        // 显示后端返回的具体错误信息
+        const errorMessage = error.response?.data?.message || error.response?.data?.error || error.message || '操作失败'
+        ElMessage.error(errorMessage)
       } finally {
         submitting.value = false
       }
@@ -397,8 +428,19 @@ const handleDialogClose = () => {
   currentRow.value = {}
 }
 
-onMounted(() => {
-  handleSearch()
+onMounted(async () => {
+  // 加载实验室列表
+  try {
+    const response = await getLaboratories({ current: 1, size: 100 })
+    if (response.data) {
+      laboratories.value = response.data.records || response.data.list || response.data
+    }
+  } catch (error) {
+    console.error('获取实验室列表失败:', error)
+  }
+  
+  // 加载设备列表
+  await handleSearch()
 })
 </script>
 

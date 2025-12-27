@@ -10,6 +10,8 @@ public class ReservationQueryDTO {
     
     private Long labId;
     
+    private String laboratoryName;  // 实验室名称（用于模糊查询）
+    
     private String status;
     
     private String type;

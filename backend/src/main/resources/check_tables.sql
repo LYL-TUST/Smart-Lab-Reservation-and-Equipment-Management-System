@@ -19,3 +19,9 @@ SHOW CREATE TABLE equipment\G
 
 
 
+
+
+
+
+
+

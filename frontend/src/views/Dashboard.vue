@@ -151,6 +151,8 @@
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import { Calendar, OfficeBuilding, Monitor, User, TrophyBase } from '@element-plus/icons-vue'
 import { useUserStore } from '../stores/user'
+import { ElMessage } from 'element-plus'
+import { getDashboardStats } from '../api/dashboard'
 import * as echarts from 'echarts'
 
 const userStore = useUserStore()
@@ -163,11 +165,27 @@ const currentDate = ref(new Date().toLocaleDateString('zh-CN', {
 }))
 
 const stats = reactive({
-  totalReservations: 156,
-  totalLabs: 12,
-  totalEquipment: 89,
-  activeUsers: 234
+  totalReservations: 0,
+  totalLabs: 0,
+  totalEquipment: 0,
+  activeUsers: 0
 })
+
+// 加载统计数据
+const loadStats = async () => {
+  try {
+    const response = await getDashboardStats()
+    if (response && response.data) {
+      stats.totalReservations = response.data.totalReservations || 0
+      stats.totalLabs = response.data.totalLabs || 0
+      stats.totalEquipment = response.data.totalEquipment || 0
+      stats.activeUsers = response.data.activeUsers || 0
+    }
+  } catch (error) {
+    console.error('获取统计数据失败:', error)
+    // 失败时保持默认值0，不显示错误提示
+  }
+}
 
 const recentReservations = ref([
   {
@@ -313,7 +331,8 @@ const initLabUsageChart = () => {
   })
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadStats()
   nextTick(() => {
     initReservationChart()
     initLabUsageChart()

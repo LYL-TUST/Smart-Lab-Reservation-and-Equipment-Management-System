@@ -1,9 +1,12 @@
 package com.lab.management.controller;
 
 import com.lab.management.common.Result;
+import com.lab.management.dto.ChangePasswordDTO;
 import com.lab.management.dto.LoginDTO;
 import com.lab.management.entity.User;
+import com.lab.management.security.UserDetailsImpl;
 import com.lab.management.service.AuthService;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
@@ -47,6 +50,22 @@ public class AuthController {
             return Result.success("注册成功", registeredUser);
         } catch (Exception e) {
             log.error("注册失败", e);
+            return Result.error(e.getMessage());
+        }
+    }
+    
+    /**
+     * 修改密码
+     */
+    @PutMapping("/change-password")
+    public Result<String> changePassword(
+            @Validated @RequestBody ChangePasswordDTO dto,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        try {
+            authService.changePassword(userDetails.getId(), dto.getOldPassword(), dto.getNewPassword());
+            return Result.success("密码修改成功");
+        } catch (Exception e) {
+            log.error("修改密码失败", e);
             return Result.error(e.getMessage());
         }
     }

@@ -122,10 +122,12 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { UserFilled, Upload, Message, Phone, Calendar } from '@element-plus/icons-vue'
 import { useUserStore } from '../stores/user'
+import { updateProfile } from '../api/user'
+import { changePassword } from '../api/auth'
 
 const userStore = useUserStore()
 const formRef = ref(null)
@@ -141,7 +143,18 @@ const userInfo = reactive({
   avatar: userStore.userInfo.avatar || '',
   createdAt: userStore.userInfo.createdAt || '',
   realName: userStore.userInfo.name || '',
-  idNumber: userStore.userInfo.studentId || ''
+  idNumber: userStore.userInfo.studentId || userStore.userInfo.student_id || ''
+})
+
+// 初始化表单数据
+onMounted(() => {
+  // 从store中获取最新信息
+  if (userStore.userInfo) {
+    form.email = userStore.userInfo.email || ''
+    form.phone = userStore.userInfo.phone || ''
+    form.realName = userStore.userInfo.name || ''
+    form.idNumber = userStore.userInfo.studentId || userStore.userInfo.student_id || ''
+  }
 })
 
 const stats = reactive({
@@ -224,11 +237,36 @@ const handleUpdateInfo = async () => {
     if (valid) {
       updating.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        Object.assign(userInfo, form)
+        const response = await updateProfile({
+          email: form.email,
+          phone: form.phone,
+          name: form.realName,
+          studentId: form.idNumber
+        })
+        
+        if (response.data) {
+          // 更新本地用户信息
+          Object.assign(userInfo, {
+            email: response.data.email || form.email,
+            phone: response.data.phone || form.phone,
+            realName: response.data.name || form.realName,
+            idNumber: response.data.studentId || form.idNumber
+          })
+          
+          // 更新store中的用户信息
+          if (userStore.userInfo) {
+            userStore.userInfo.email = response.data.email || form.email
+            userStore.userInfo.phone = response.data.phone || form.phone
+            userStore.userInfo.name = response.data.name || form.realName
+            userStore.userInfo.studentId = response.data.studentId || form.idNumber
+          }
+        }
+        
         ElMessage.success('信息更新成功')
       } catch (error) {
-        console.error(error)
+        console.error('更新个人信息失败:', error)
+        const errorMessage = error.response?.data?.message || error.message || '更新失败'
+        ElMessage.error(errorMessage)
       } finally {
         updating.value = false
       }
@@ -241,11 +279,21 @@ const handleChangePassword = async () => {
     if (valid) {
       changingPassword.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        await changePassword({
+          oldPassword: passwordForm.oldPassword,
+          newPassword: passwordForm.newPassword
+        })
+        
         ElMessage.success('密码修改成功')
         passwordFormRef.value.resetFields()
+        // 清空表单数据
+        passwordForm.oldPassword = ''
+        passwordForm.newPassword = ''
+        passwordForm.confirmPassword = ''
       } catch (error) {
-        console.error(error)
+        console.error('修改密码失败:', error)
+        const errorMessage = error.response?.data?.message || error.message || '修改密码失败'
+        ElMessage.error(errorMessage)
       } finally {
         changingPassword.value = false
       }

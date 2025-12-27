@@ -25,6 +25,14 @@ public class EquipmentService {
     private final StateMachineService stateMachineService;
     
     /**
+     * 统计设备总数
+     */
+    public long count() {
+        LambdaQueryWrapper<Equipment> wrapper = new LambdaQueryWrapper<>();
+        return equipmentMapper.selectCount(wrapper);
+    }
+    
+    /**
      * 分页查询设备
      */
     public Page<Equipment> page(Integer current, Integer size, String name, 

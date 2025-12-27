@@ -4,8 +4,11 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lab.management.common.Result;
 import com.lab.management.dto.ReservationDTO;
 import com.lab.management.dto.ReservationQueryDTO;
+import com.lab.management.dto.ReservationVO;
+import com.lab.management.entity.Laboratory;
 import com.lab.management.entity.Reservation;
 import com.lab.management.security.UserDetailsImpl;
+import com.lab.management.service.LaboratoryService;
 import com.lab.management.service.ReservationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,14 +28,29 @@ import java.util.List;
 public class ReservationController {
     
     private final ReservationService reservationService;
+    private final LaboratoryService laboratoryService;
     
     /**
      * 分页查询预约
      */
     @GetMapping("/page")
-    public Result<Page<Reservation>> page(ReservationQueryDTO queryDTO) {
+    public Result<Page<ReservationVO>> page(ReservationQueryDTO queryDTO) {
         Page<Reservation> page = reservationService.page(queryDTO);
-        return Result.success(page);
+        
+        // 转换为VO并填充实验室名称
+        Page<ReservationVO> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
+        voPage.setRecords(page.getRecords().stream().map(reservation -> {
+            ReservationVO vo = ReservationVO.from(reservation);
+            if (reservation.getLabId() != null) {
+                Laboratory laboratory = laboratoryService.getById(reservation.getLabId());
+                if (laboratory != null) {
+                    vo.setLaboratoryName(laboratory.getName());
+                }
+            }
+            return vo;
+        }).collect(java.util.stream.Collectors.toList()));
+        
+        return Result.success(voPage);
     }
     
     /**
@@ -55,6 +73,23 @@ public class ReservationController {
             @Validated @RequestBody ReservationDTO dto,
             @AuthenticationPrincipal UserDetailsImpl userDetails) {
         try {
+            log.info("收到创建预约请求: labId={}, startTime={}, endTime={}, type={}, purpose={}, participantCount={}", 
+                dto.getLabId(), dto.getStartTime(), dto.getEndTime(), dto.getType(), dto.getPurpose(), dto.getParticipantCount());
+            
+            // 验证数据
+            if (dto.getLabId() == null) {
+                return Result.error("实验室不能为空");
+            }
+            if (dto.getStartTime() == null) {
+                return Result.error("开始时间不能为空");
+            }
+            if (dto.getEndTime() == null) {
+                return Result.error("结束时间不能为空");
+            }
+            if (dto.getStartTime().isAfter(dto.getEndTime())) {
+                return Result.error("开始时间不能晚于结束时间");
+            }
+            
             Reservation reservation = reservationService.createSingleReservation(dto, userDetails.getId());
             return Result.success("预约创建成功，等待审批", reservation);
         } catch (Exception e) {
@@ -97,10 +132,10 @@ public class ReservationController {
     }
     
     /**
-     * 审批预约（仅管理员）
+     * 审批预约（教师和管理员）
      */
     @PutMapping("/{id}/approve")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     public Result<Reservation> approve(
             @PathVariable Long id,
             @RequestParam boolean approved,
@@ -164,6 +199,23 @@ public class ReservationController {
     }
     
     /**
+     * 更新预约（仅限待审核状态）
+     */
+    @PutMapping("/{id}")
+    public Result<Reservation> update(
+            @PathVariable Long id,
+            @Validated @RequestBody ReservationDTO dto,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        try {
+            Reservation reservation = reservationService.updateReservation(id, dto, userDetails.getId());
+            return Result.success("预约更新成功", reservation);
+        } catch (Exception e) {
+            log.error("更新预约失败", e);
+            return Result.error(e.getMessage());
+        }
+    }
+    
+    /**
      * 获取当前用户的预约列表
      */
     @GetMapping("/my")
@@ -174,6 +226,25 @@ public class ReservationController {
         
         Page<Reservation> page = reservationService.getUserReservations(userDetails.getId(), current, size);
         return Result.success(page);
+    }
+    
+    /**
+     * 获取日历视图的预约数据
+     */
+    @GetMapping("/calendar")
+    public Result<List<com.lab.management.dto.CalendarReservationDTO>> getCalendarReservations(
+            @RequestParam(required = false) String start,
+            @RequestParam(required = false) String end,
+            @RequestParam(required = false) Long labId,
+            @RequestParam(required = false) String status) {
+        try {
+            List<com.lab.management.dto.CalendarReservationDTO> events = 
+                reservationService.getCalendarReservations(start, end, labId, status);
+            return Result.success(events);
+        } catch (Exception e) {
+            log.error("获取日历预约数据失败", e);
+            return Result.error(e.getMessage());
+        }
     }
 }
 

@@ -52,8 +52,19 @@ request.interceptors.response.use(
                 case 500:
                     ElMessage.error('服务器错误')
                     break
+                case 400:
+                    // 400错误可能是验证失败，显示详细错误信息
+                    const errorData = error.response.data
+                    if (errorData && errorData.message) {
+                        ElMessage.error(errorData.message)
+                    } else if (errorData && errorData.error) {
+                        ElMessage.error(errorData.error)
+                    } else {
+                        ElMessage.error('请求参数错误，请检查输入的数据')
+                    }
+                    break
                 default:
-                    ElMessage.error(error.response.data.message || '请求失败')
+                    ElMessage.error(error.response.data?.message || error.response.data?.error || '请求失败')
             }
         } else {
             ElMessage.error('网络错误，请检查网络连接')

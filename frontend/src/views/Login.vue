@@ -230,6 +230,26 @@ const handleLogin = async () => {
         const res = await login(loginForm)
         console.log('登录响应:', res)
         
+        // 检查响应数据
+        if (!res || !res.data) {
+          console.error('登录响应数据格式错误:', res)
+          ElMessage.error('登录响应数据格式错误，请检查后端服务')
+          return
+        }
+        
+        // 检查token和user是否存在
+        if (!res.data.token) {
+          console.error('登录响应中缺少token:', res.data)
+          ElMessage.error('登录失败：未获取到token')
+          return
+        }
+        
+        if (!res.data.user) {
+          console.error('登录响应中缺少user信息:', res.data)
+          ElMessage.error('登录失败：未获取到用户信息')
+          return
+        }
+        
         // 后端返回的数据结构: { token, user }
         userStore.setToken(res.data.token)
         
@@ -243,7 +263,10 @@ const handleLogin = async () => {
           role: user.role,
           avatar: user.avatar || '',
           phone: user.phone || '',
-          status: user.status
+          status: user.status,
+          studentId: user.studentId || '',
+          department: user.department || '',
+          createdAt: user.createdAt || ''
         }
         
         console.log('用户信息:', userInfo)
@@ -252,7 +275,41 @@ const handleLogin = async () => {
         router.push('/')
       } catch (error) {
         console.error('登录失败:', error)
-        ElMessage.error(error.response?.data?.message || '登录失败，请检查用户名和密码')
+        console.error('错误详情:', {
+          message: error.message,
+          response: error.response,
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data
+        })
+        
+        // 更详细的错误信息
+        let errorMessage = '登录失败，请检查用户名和密码'
+        if (error.response) {
+          // 有HTTP响应
+          const status = error.response.status
+          const data = error.response.data
+          
+          if (status === 401) {
+            errorMessage = '用户名或密码错误'
+          } else if (status === 400) {
+            errorMessage = data?.message || data?.error || '请求参数错误'
+          } else if (status === 500) {
+            errorMessage = '服务器错误，请稍后重试'
+          } else if (status === 404) {
+            errorMessage = '登录接口不存在，请检查后端服务是否正常运行'
+          } else {
+            errorMessage = data?.message || data?.error || `登录失败 (${status})`
+          }
+        } else if (error.request) {
+          // 请求已发出但没有收到响应
+          errorMessage = '无法连接到服务器，请检查：\n1. 后端服务是否运行在 http://localhost:8080\n2. 网络连接是否正常'
+        } else {
+          // 请求配置出错
+          errorMessage = error.message || '登录请求配置错误'
+        }
+        
+        ElMessage.error(errorMessage)
       } finally {
         loading.value = false
       }

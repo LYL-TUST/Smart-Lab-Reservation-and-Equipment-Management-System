@@ -1,5 +1,6 @@
 package com.lab.management.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import javax.validation.constraints.NotNull;
 import java.time.LocalDateTime;
@@ -22,9 +23,11 @@ public class ReservationDTO {
     private String type;
     
     @NotNull(message = "开始时间不能为空")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime startTime;
     
     @NotNull(message = "结束时间不能为空")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime endTime;
     
     private String purpose;

@@ -31,6 +31,17 @@ export const deleteReservation = (id) => {
     })
 }
 
+export const approveReservation = (id, approved, remark) => {
+    return request({
+        url: `/reservation/${id}/approve`,
+        method: 'put',
+        params: {
+            approved: approved,
+            remark: remark
+        }
+    })
+}
+
 export const checkConflict = (data) => {
     return request({
         url: '/reservation/check-conflict',

@@ -2,7 +2,7 @@ import request from './request'
 
 export const getEquipment = (params) => {
     return request({
-        url: '/equipment',
+        url: '/equipment/page',
         method: 'get',
         params
     })

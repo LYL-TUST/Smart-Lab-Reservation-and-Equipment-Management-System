@@ -3,7 +3,9 @@ package com.lab.management.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lab.management.common.Result;
 import com.lab.management.dto.LaboratoryDTO;
+import com.lab.management.dto.LaboratoryVO;
 import com.lab.management.entity.Laboratory;
+import com.lab.management.service.EquipmentService;
 import com.lab.management.service.LaboratoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,12 +23,13 @@ import org.springframework.web.bind.annotation.*;
 public class LaboratoryController {
 
     private final LaboratoryService laboratoryService;
+    private final EquipmentService equipmentService;
 
     /**
      * 分页查询实验室
      */
     @GetMapping("/page")
-    public Result<Page<Laboratory>> page(
+    public Result<Page<LaboratoryVO>> page(
             @RequestParam(defaultValue = "1") Integer current,
             @RequestParam(defaultValue = "10") Integer size,
             @RequestParam(required = false) String name,
@@ -34,7 +37,19 @@ public class LaboratoryController {
             @RequestParam(required = false) String status) {
 
         Page<Laboratory> page = laboratoryService.page(current, size, name, type, status);
-        return Result.success(page);
+        
+        // 转换为VO并填充设备数量
+        Page<LaboratoryVO> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
+        voPage.setRecords(page.getRecords().stream().map(lab -> {
+            LaboratoryVO vo = LaboratoryVO.from(lab);
+            // 查询该实验室的设备数量（只查询总数，不查询具体数据）
+            Page<com.lab.management.entity.Equipment> equipmentPage = 
+                equipmentService.page(1, 1, null, lab.getId(), null, null);
+            vo.setEquipmentCount((int) equipmentPage.getTotal());
+            return vo;
+        }).collect(java.util.stream.Collectors.toList()));
+        
+        return Result.success(voPage);
     }
 
     /**

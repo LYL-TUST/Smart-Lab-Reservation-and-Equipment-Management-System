@@ -3,8 +3,11 @@ package com.lab.management.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.lab.management.common.Result;
 import com.lab.management.dto.EquipmentDTO;
+import com.lab.management.dto.EquipmentVO;
 import com.lab.management.entity.Equipment;
+import com.lab.management.entity.Laboratory;
 import com.lab.management.service.EquipmentService;
+import com.lab.management.service.LaboratoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -21,12 +24,13 @@ import org.springframework.web.bind.annotation.*;
 public class EquipmentController {
 
     private final EquipmentService equipmentService;
+    private final LaboratoryService laboratoryService;
 
     /**
      * 分页查询设备
      */
     @GetMapping("/page")
-    public Result<Page<Equipment>> page(
+    public Result<Page<EquipmentVO>> page(
             @RequestParam(defaultValue = "1") Integer current,
             @RequestParam(defaultValue = "10") Integer size,
             @RequestParam(required = false) String name,
@@ -35,7 +39,21 @@ public class EquipmentController {
             @RequestParam(required = false) String status) {
 
         Page<Equipment> page = equipmentService.page(current, size, name, labId, category, status);
-        return Result.success(page);
+        
+        // 转换为VO并填充实验室名称
+        Page<EquipmentVO> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
+        voPage.setRecords(page.getRecords().stream().map(equipment -> {
+            EquipmentVO vo = EquipmentVO.from(equipment);
+            if (equipment.getLabId() != null) {
+                Laboratory laboratory = laboratoryService.getById(equipment.getLabId());
+                if (laboratory != null) {
+                    vo.setLaboratoryName(laboratory.getName());
+                }
+            }
+            return vo;
+        }).collect(java.util.stream.Collectors.toList()));
+        
+        return Result.success(voPage);
     }
 
     /**

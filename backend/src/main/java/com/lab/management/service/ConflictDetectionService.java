@@ -118,14 +118,22 @@ public class ConflictDetectionService {
             return ConflictResult.conflict("开始时间不能晚于结束时间");
         }
         
-        if (startTime.isBefore(LocalDateTime.now())) {
-            return ConflictResult.conflict("开始时间不能早于当前时间");
+        // 允许预约未来时间，但不允许预约过去时间（至少是当前时间之后）
+        LocalDateTime now = LocalDateTime.now();
+        if (startTime.isBefore(now)) {
+            return ConflictResult.conflict("开始时间不能早于当前时间，请选择未来的时间");
         }
         
-        // 检查预约时长（不超过8小时）
+        // 检查预约时长（不超过24小时，允许跨天预约）
         long hours = java.time.Duration.between(startTime, endTime).toHours();
-        if (hours > 8) {
-            return ConflictResult.conflict("单次预约时长不能超过8小时");
+        if (hours > 24) {
+            return ConflictResult.conflict("单次预约时长不能超过24小时");
+        }
+        
+        // 检查预约时长是否太短（至少15分钟）
+        long minutes = java.time.Duration.between(startTime, endTime).toMinutes();
+        if (minutes < 15) {
+            return ConflictResult.conflict("预约时长至少需要15分钟");
         }
         
         return ConflictResult.noConflict();

@@ -25,6 +25,14 @@ public class LaboratoryService {
     private final StateMachineService stateMachineService;
     
     /**
+     * 统计实验室总数
+     */
+    public long count() {
+        LambdaQueryWrapper<Laboratory> wrapper = new LambdaQueryWrapper<>();
+        return laboratoryMapper.selectCount(wrapper);
+    }
+    
+    /**
      * 分页查询实验室
      */
     public Page<Laboratory> page(Integer current, Integer size, String name, String type, String status) {
@@ -70,6 +78,11 @@ public class LaboratoryService {
         // 设置默认状态
         if (!StringUtils.hasText(laboratory.getStatus())) {
             laboratory.setStatus(LabStatus.IDLE.name());
+        }
+        
+        // 如果没有提供图片URL，设置为null（前端会使用默认图片）
+        if (!StringUtils.hasText(laboratory.getImageUrl())) {
+            laboratory.setImageUrl(null);
         }
         
         laboratoryMapper.insert(laboratory);

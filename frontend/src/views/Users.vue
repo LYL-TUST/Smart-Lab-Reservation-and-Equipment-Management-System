@@ -133,6 +133,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh, View, Edit, Delete } from '@element-plus/icons-vue'
+import { getUsers, createUser, updateUser, deleteUser } from '../api/user'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -225,16 +226,37 @@ const getRoleText = (role) => {
   return textMap[role] || role
 }
 
-const handleSearch = () => {
+const handleSearch = async () => {
   loading.value = true
-  setTimeout(() => {
+  try {
+    const params = {
+      current: pagination.page,
+      size: pagination.size,
+      username: searchForm.username || undefined,
+      role: searchForm.role || undefined
+    }
+    const response = await getUsers(params)
+    console.log('用户数据:', response)
+    if (response && response.data) {
+      const pageData = response.data
+      // 如果后端有数据就用后端的，否则保留静态数据
+      if (pageData.records && pageData.records.length > 0) {
+        tableData.value = pageData.records
+        pagination.total = pageData.total || 0
+      }
+    }
+  } catch (error) {
+    console.error('获取用户列表失败:', error)
+    // 出错时保留静态数据，不显示错误提示
+  } finally {
     loading.value = false
-  }, 500)
+  }
 }
 
 const handleReset = () => {
   searchForm.username = ''
   searchForm.role = ''
+  pagination.page = 1
   handleSearch()
 }
 
@@ -246,7 +268,12 @@ const handleCreate = () => {
 const handleEdit = (row) => {
   dialogTitle.value = '编辑用户'
   currentRow.value = row
-  Object.assign(form, row)
+  Object.assign(form, {
+    username: row.username,
+    email: row.email,
+    role: row.role,
+    phone: row.phone
+  })
   dialogVisible.value = true
 }
 
@@ -255,15 +282,22 @@ const handleView = (row) => {
   detailVisible.value = true
 }
 
-const handleDelete = (row) => {
-  ElMessageBox.confirm('确定要删除此用户吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除此用户吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await deleteUser(row.id)
     ElMessage.success('删除成功')
-    handleSearch()
-  }).catch(() => {})
+    await handleSearch()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除用户失败:', error)
+      ElMessage.error('删除用户失败')
+    }
+  }
 }
 
 const handleSubmit = async () => {
@@ -271,12 +305,27 @@ const handleSubmit = async () => {
     if (valid) {
       submitting.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        ElMessage.success(dialogTitle.value === '添加用户' ? '添加成功' : '更新成功')
+        const submitData = {
+          username: form.username,
+          email: form.email,
+          role: form.role,
+          phone: form.phone
+        }
+        
+        if (dialogTitle.value === '添加用户') {
+          submitData.password = form.password
+          await createUser(submitData)
+          ElMessage.success('添加成功')
+        } else {
+          await updateUser(currentRow.value.id, submitData)
+          ElMessage.success('更新成功')
+        }
+        
         dialogVisible.value = false
-        handleSearch()
+        await handleSearch()
       } catch (error) {
-        console.error(error)
+        console.error('提交失败:', error)
+        ElMessage.error(error.message || '操作失败')
       } finally {
         submitting.value = false
       }

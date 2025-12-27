@@ -22,7 +22,8 @@
         </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="searchForm.status" placeholder="请选择状态" clearable>
-            <el-option label="空闲" value="AVAILABLE" />
+            <el-option label="空闲" value="IDLE" />
+            <el-option label="已预约" value="RESERVED" />
             <el-option label="使用中" value="IN_USE" />
             <el-option label="维护中" value="MAINTENANCE" />
           </el-select>
@@ -137,7 +138,8 @@
         </el-form-item>
         <el-form-item label="状态" prop="status">
           <el-select v-model="form.status" placeholder="请选择状态" style="width: 100%">
-            <el-option label="空闲" value="AVAILABLE" />
+            <el-option label="空闲" value="IDLE" />
+            <el-option label="已预约" value="RESERVED" />
             <el-option label="使用中" value="IN_USE" />
             <el-option label="维护中" value="MAINTENANCE" />
           </el-select>
@@ -184,6 +186,8 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh, View, Edit, Delete, Picture, Location, User, Monitor } from '@element-plus/icons-vue'
+import { getLaboratories, createLaboratory, updateLaboratory, deleteLaboratory } from '../api/laboratory'
+import defaultLabImage from '../assets/img/实验室.jpg'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -211,9 +215,9 @@ const tableData = ref([
     location: '教学楼3楼301',
     capacity: 50,
     equipmentCount: 50,
-    status: 'AVAILABLE',
+    status: 'IDLE',
     description: '配备高性能计算机，适合编程实验',
-    image: 'https://via.placeholder.com/300x200'
+    image: defaultLabImage
   },
   {
     id: 2,
@@ -223,7 +227,7 @@ const tableData = ref([
     equipmentCount: 30,
     status: 'IN_USE',
     description: '配备各类物理实验设备',
-    image: 'https://via.placeholder.com/300x200'
+    image: defaultLabImage
   },
   {
     id: 3,
@@ -233,7 +237,7 @@ const tableData = ref([
     equipmentCount: 25,
     status: 'MAINTENANCE',
     description: '配备化学实验器材和通风设备',
-    image: 'https://via.placeholder.com/300x200'
+    image: defaultLabImage
   }
 ])
 
@@ -241,7 +245,7 @@ const form = reactive({
   name: '',
   location: '',
   capacity: 30,
-  status: 'AVAILABLE',
+  status: 'IDLE',
   description: ''
 })
 
@@ -254,7 +258,8 @@ const rules = {
 
 const getStatusType = (status) => {
   const typeMap = {
-    'AVAILABLE': 'success',
+    'IDLE': 'success',
+    'RESERVED': 'info',
     'IN_USE': 'warning',
     'MAINTENANCE': 'danger'
   }
@@ -263,23 +268,56 @@ const getStatusType = (status) => {
 
 const getStatusText = (status) => {
   const textMap = {
-    'AVAILABLE': '空闲',
+    'IDLE': '空闲',
+    'RESERVED': '已预约',
     'IN_USE': '使用中',
     'MAINTENANCE': '维护中'
   }
   return textMap[status] || status
 }
 
-const handleSearch = () => {
+const handleSearch = async () => {
   loading.value = true
-  setTimeout(() => {
+  try {
+    const params = {
+      current: pagination.page,
+      size: pagination.size,
+      name: searchForm.name || undefined,
+      status: searchForm.status || undefined
+    }
+    const response = await getLaboratories(params)
+    console.log('实验室数据:', response)
+    if (response && response.data) {
+      const pageData = response.data
+      // 如果后端有数据就用后端的
+      if (pageData.records && pageData.records.length > 0) {
+        tableData.value = pageData.records.map(lab => ({
+          ...lab,
+          equipmentCount: lab.equipmentCount || 0, // 使用后端返回的设备数量
+          image: (lab.imageUrl && lab.imageUrl.trim()) ? lab.imageUrl : defaultLabImage
+        }))
+        pagination.total = pageData.total || 0
+      } else {
+        // 如果后端没数据，清空表格
+        tableData.value = []
+        pagination.total = 0
+      }
+    } else {
+      tableData.value = []
+      pagination.total = 0
+    }
+  } catch (error) {
+    console.error('获取实验室列表失败:', error)
+    // 出错时也保留静态数据，不清空
+  } finally {
     loading.value = false
-  }, 500)
+  }
 }
 
 const handleReset = () => {
   searchForm.name = ''
   searchForm.status = ''
+  pagination.page = 1
   handleSearch()
 }
 
@@ -291,7 +329,13 @@ const handleCreate = () => {
 const handleEdit = (row) => {
   dialogTitle.value = '编辑实验室'
   currentRow.value = row
-  Object.assign(form, row)
+  Object.assign(form, {
+    name: row.name,
+    location: row.location,
+    capacity: row.capacity,
+    status: row.status,
+    description: row.description
+  })
   dialogVisible.value = true
 }
 
@@ -300,15 +344,22 @@ const handleView = (row) => {
   detailVisible.value = true
 }
 
-const handleDelete = (row) => {
-  ElMessageBox.confirm('确定要删除此实验室吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除此实验室吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await deleteLaboratory(row.id)
     ElMessage.success('删除成功')
-    handleSearch()
-  }).catch(() => {})
+    await handleSearch()
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('删除实验室失败:', error)
+      ElMessage.error('删除实验室失败')
+    }
+  }
 }
 
 const handleSubmit = async () => {
@@ -316,12 +367,27 @@ const handleSubmit = async () => {
     if (valid) {
       submitting.value = true
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        ElMessage.success(dialogTitle.value === '添加实验室' ? '添加成功' : '更新成功')
+        const submitData = {
+          name: form.name,
+          location: form.location,
+          capacity: form.capacity,
+          status: form.status,
+          description: form.description
+        }
+        
+        if (dialogTitle.value === '添加实验室') {
+          await createLaboratory(submitData)
+          ElMessage.success('添加成功')
+        } else {
+          await updateLaboratory(currentRow.value.id, submitData)
+          ElMessage.success('更新成功')
+        }
+        
         dialogVisible.value = false
-        handleSearch()
+        await handleSearch()
       } catch (error) {
-        console.error(error)
+        console.error('提交失败:', error)
+        ElMessage.error(error.message || '操作失败')
       } finally {
         submitting.value = false
       }
