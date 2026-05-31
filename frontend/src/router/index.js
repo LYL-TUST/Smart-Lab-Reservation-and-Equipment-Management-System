@@ -27,6 +27,16 @@ const routes = [
                 }
             },
             {
+                path: 'ai-assistant',
+                name: 'AiAssistantPage',
+                component: () => import('../views/AiAssistantPage.vue'),
+                meta: {
+                    title: 'AI 小助手',
+                    icon: 'ChatDotRound',
+                    permissions: [PERMISSIONS.DASHBOARD_VIEW]
+                }
+            },
+            {
                 path: 'reservations',
                 name: 'Reservations',
                 component: () => import('../views/Reservations.vue'),

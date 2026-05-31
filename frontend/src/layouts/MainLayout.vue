@@ -48,7 +48,6 @@
         </div>
 
         <div class="header-right">
-          <!-- 主题切换 -->
           <el-tooltip :content="appStore.isDark ? '切换到亮色模式' : '切换到暗黑模式'">
             <el-button
               :icon="appStore.isDark ? Sunny : Moon"
@@ -57,12 +56,10 @@
             />
           </el-tooltip>
 
-          <!-- 通知 -->
           <el-badge :value="3" class="notification-badge">
             <el-button :icon="Bell" circle />
           </el-badge>
 
-          <!-- 用户菜单 -->
           <el-dropdown @command="handleCommand">
             <div class="user-info">
               <el-avatar :size="35" :src="userStore.userInfo?.avatar">
@@ -99,6 +96,8 @@
         </router-view>
       </el-main>
     </el-container>
+
+    <AiAssistant />
   </div>
 </template>
 
@@ -121,45 +120,36 @@ import {
 import { useAppStore } from '../stores/app'
 import { useUserStore } from '../stores/user'
 import { hasAnyPermission } from '../config/permissions'
+import AiAssistant from '../components/AiAssistant.vue'
+
+const _AiAssistant = AiAssistant
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 const userStore = useUserStore()
 
-const sidebarWidth = computed(() => {
-  return appStore.sidebarCollapsed ? '64px' : '240px'
-})
-
-const activeMenu = computed(() => {
-  return route.path
-})
-
-const currentRoute = computed(() => {
-  return route
-})
+const sidebarWidth = computed(() => (appStore.sidebarCollapsed ? '64px' : '240px'))
+const activeMenu = computed(() => route.path)
+const currentRoute = computed(() => route)
 
 const menuRoutes = computed(() => {
   const allRoutes = router.options.routes
     .find(r => r.path === '/')
     ?.children.filter(r => r.meta?.title && !r.meta?.hidden) || []
-  
-  // 根据用户角色过滤菜单
+
   const userRole = userStore.userInfo?.role
   if (!userRole) return []
-  
-  return allRoutes.filter(route => {
-    // 如果路由指定了角色限制
+
+  return allRoutes.filter((route) => {
     if (route.meta?.roles && route.meta.roles.length > 0) {
       return route.meta.roles.includes(userRole)
     }
-    
-    // 如果路由指定了权限要求
+
     if (route.meta?.permissions && route.meta.permissions.length > 0) {
       return hasAnyPermission(userRole, route.meta.permissions)
     }
-    
-    // 默认显示
+
     return true
   })
 })
@@ -287,14 +277,13 @@ const handleCommand = (command) => {
   .username {
     display: none;
   }
-  
+
   .header-left {
     gap: 10px;
   }
-  
+
   .header-right {
     gap: 10px;
   }
 }
 </style>
-
