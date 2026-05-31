@@ -117,11 +117,11 @@ body {
 
 /* 渐变背景 */
 .gradient-bg {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #ea66c9 0%, #cca9f0 100%);
 }
 
 .gradient-bg-blue {
-  background: linear-gradient(135deg, #667eea 0%, #409eff 100%);
+  background: linear-gradient(135deg, #e164a7 0%, #b0077b 100%);
 }
 
 .gradient-bg-green {
@@ -133,7 +133,7 @@ body {
 }
 
 .gradient-bg-purple {
-  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  background: linear-gradient(135deg, #dc6ccb 0%, #903f8e 100%);
 }
 
 /* 玻璃态效果 */

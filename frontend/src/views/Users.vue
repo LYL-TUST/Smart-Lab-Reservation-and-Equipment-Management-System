@@ -32,6 +32,7 @@
       <el-table :data="tableData" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" />
+        <el-table-column prop="name" label="姓名" />
         <el-table-column prop="email" label="邮箱" />
         <el-table-column prop="role" label="角色" width="100">
           <template #default="{ row }">
@@ -86,6 +87,9 @@
         <el-form-item label="用户名" prop="username">
           <el-input v-model="form.username" placeholder="请输入用户名" />
         </el-form-item>
+        <el-form-item label="姓名" prop="name">
+          <el-input v-model="form.name" placeholder="请输入姓名" />
+        </el-form-item>
         <el-form-item label="邮箱" prop="email">
           <el-input v-model="form.email" placeholder="请输入邮箱" />
         </el-form-item>
@@ -116,6 +120,7 @@
       <el-descriptions :column="2" border>
         <el-descriptions-item label="用户ID">{{ currentRow.id }}</el-descriptions-item>
         <el-descriptions-item label="用户名">{{ currentRow.username }}</el-descriptions-item>
+        <el-descriptions-item label="姓名">{{ currentRow.name }}</el-descriptions-item>
         <el-descriptions-item label="邮箱">{{ currentRow.email }}</el-descriptions-item>
         <el-descriptions-item label="角色">
           <el-tag :type="getRoleType(currentRow.role)">
@@ -183,6 +188,7 @@ const tableData = ref([
 
 const form = reactive({
   username: '',
+  name: '',
   email: '',
   password: '',
   role: 'STUDENT',
@@ -193,6 +199,10 @@ const rules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
     { min: 3, max: 20, message: '用户名长度在3-20个字符', trigger: 'blur' }
+  ],
+  name: [
+    { required: true, message: '请输入姓名', trigger: 'blur' },
+    { min: 2, max: 20, message: '姓名长度在2-20个字符', trigger: 'blur' }
   ],
   email: [
     { required: true, message: '请输入邮箱', trigger: 'blur' },
@@ -270,6 +280,7 @@ const handleEdit = (row) => {
   currentRow.value = row
   Object.assign(form, {
     username: row.username,
+    name: row.name || '',
     email: row.email,
     role: row.role,
     phone: row.phone
@@ -307,6 +318,7 @@ const handleSubmit = async () => {
       try {
         const submitData = {
           username: form.username,
+          name: form.name,
           email: form.email,
           role: form.role,
           phone: form.phone

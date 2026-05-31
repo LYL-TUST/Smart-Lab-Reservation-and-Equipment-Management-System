@@ -260,28 +260,6 @@ npm run dev
 - [ ] 数据导出
 - [ ] 移动端优化
 
-## 🐛 已知问题
 
-暂无
 
-## 📄 许可证
-
-MIT License
-
-## 👨‍💻 开发者
-
-课程设计项目
-
-## 🙏 致谢
-
-感谢以下开源项目：
-- Vue.js
-- Element Plus
-- Spring Boot
-- MyBatis Plus
-- ECharts
-
----
-
-**如有问题，欢迎提 Issue！** 🎉
 

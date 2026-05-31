@@ -108,9 +108,9 @@ mvn spring-boot:run
 
 ### 5. 测试账号
 ```
-管理员: admin / admin123
-教师: teacher1 / teacher123
-学生: student1 / student123
+管理员: admin / 123456
+教师: teacher1 / 123456
+学生: student1 / 123456
 ```
 
 ## API文档

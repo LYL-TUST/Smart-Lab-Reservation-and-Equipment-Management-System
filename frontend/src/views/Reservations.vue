@@ -739,8 +739,11 @@ const loadCalendarEvents = async (start, end) => {
 
 // 日历日期范围变化
 const handleCalendarDatesSet = (info) => {
+  // FullCalendar 的 end 是排他的（exclusive），需要减去一天
   const start = info.start.toISOString().split('T')[0]
-  const end = info.end.toISOString().split('T')[0]
+  const endDate = new Date(info.end)
+  endDate.setDate(endDate.getDate() - 1) // 减去一天，因为 end 是排他的
+  const end = endDate.toISOString().split('T')[0]
   loadCalendarEvents(start, end)
 }
 

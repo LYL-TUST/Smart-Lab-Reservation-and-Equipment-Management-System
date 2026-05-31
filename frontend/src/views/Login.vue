@@ -142,7 +142,7 @@
 
     <!-- 页脚 -->
     <div class="footer">
-      <p>© 2024 智能实验室预约系统 | Powered by Vue 3 + Element Plus</p>
+      <p>© 智能实验室预约系统 | Powered by Vue 3 + Element Plus</p>
     </div>
   </div>
 </template>
@@ -344,7 +344,7 @@ const handleRegister = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, rgb(251, 208, 230) 0%, #b351a4 100%);
   overflow: hidden;
 }
 

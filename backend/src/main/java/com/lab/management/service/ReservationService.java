@@ -475,14 +475,23 @@ public class ReservationService {
             );
         }
         
-        // 日期范围过滤
-        if (StringUtils.hasText(startDate)) {
+        // 日期范围过滤 - 查询所有与日期范围有交集的预约
+        // 正确的逻辑：预约开始时间 <= endDate 且 预约结束时间 >= startDate
+        if (StringUtils.hasText(startDate) && StringUtils.hasText(endDate)) {
             LocalDateTime start = LocalDateTime.parse(startDate + "T00:00:00");
-            wrapper.ge(Reservation::getStartTime, start);
-        }
-        if (StringUtils.hasText(endDate)) {
             LocalDateTime end = LocalDateTime.parse(endDate + "T23:59:59");
-            wrapper.le(Reservation::getEndTime, end);
+            // 预约的结束时间 >= 查询开始时间（预约在查询范围开始之后或当天结束）
+            wrapper.ge(Reservation::getEndTime, start);
+            // 预约的开始时间 <= 查询结束时间（预约在查询范围结束之前或当天开始）
+            wrapper.le(Reservation::getStartTime, end);
+        } else if (StringUtils.hasText(startDate)) {
+            // 只有开始日期，查询所有结束时间 >= startDate 的预约
+            LocalDateTime start = LocalDateTime.parse(startDate + "T00:00:00");
+            wrapper.ge(Reservation::getEndTime, start);
+        } else if (StringUtils.hasText(endDate)) {
+            // 只有结束日期，查询所有开始时间 <= endDate 的预约
+            LocalDateTime end = LocalDateTime.parse(endDate + "T23:59:59");
+            wrapper.le(Reservation::getStartTime, end);
         }
         
         wrapper.orderByAsc(Reservation::getStartTime);
