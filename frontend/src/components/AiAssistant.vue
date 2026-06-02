@@ -78,9 +78,19 @@
 
               <div v-if="msg.resources && msg.resources.length" class="resource-card">
                 <div class="section-title">可预约资源</div>
-                <div class="resource-item" v-for="resource in msg.resources" :key="resource.id">
+                <button
+                  v-for="resource in msg.resources"
+                  :key="resource.id"
+                  class="resource-item resource-selectable"
+                  :class="{ selected: selectedResourceId === resource.id }"
+                  type="button"
+                  @click="selectResource(resource, msg)"
+                >
                   <div class="resource-top-row">
-                    <div class="resource-name">{{ resource.name }}</div>
+                    <div class="resource-name">
+                      {{ resource.name }}
+                      <el-tag v-if="selectedResourceId === resource.id" size="small" effect="dark" type="success" class="selected-tag">已选中</el-tag>
+                    </div>
                     <el-tag size="small" effect="plain" type="success">{{ getRecommendLevel(resource) }}</el-tag>
                   </div>
                   <div class="resource-meta">
@@ -89,7 +99,8 @@
                   <div v-if="resource.reason" class="resource-reason">
                     推荐理由：{{ resource.reason }}
                   </div>
-                </div>
+                  <div class="resource-hint">点击即可选中并填入预约草稿</div>
+                </button>
               </div>
 
               <div v-if="msg.suggestions && msg.suggestions.length" class="suggestion-card message-suggestion-card">
@@ -246,11 +257,13 @@ const intentLabelMap = {
 
 const currentIntentLabel = computed(() => intentLabelMap[currentIntent.value] || '')
 const historyPreview = computed(() => messages.value.slice(-8))
-const isDraftComplete = (draft = {}) => Boolean(draft?.laboratoryName && draft?.startTime && draft?.endTime)
+const isDraftComplete = (draft = {}) => Boolean((draft?.labId || draft?.laboratoryName) && draft?.startTime && draft?.endTime && draft?.participantCount && draft?.purpose)
 const getMissingDraftFields = (draft = {}) => {
   const missing = []
-  if (!draft?.laboratoryName) missing.push('实验室名称')
+  if (!draft?.labId && !draft?.laboratoryName) missing.push('实验室名称')
   if (!draft?.startTime || !draft?.endTime) missing.push('预约时间')
+  if (!draft?.participantCount) missing.push('人数')
+  if (!draft?.purpose) missing.push('用途')
   return missing
 }
 
@@ -282,9 +295,29 @@ const displayDraftFields = (draft = {}) => {
     }, {})
 }
 
+const parseDraftDate = (value) => {
+  if (!value) return null
+  const normalized = String(value).trim().replace(' ', 'T')
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const toBackendDateTime = (value) => {
+  const date = parseDraftDate(value)
+  if (!date) return value
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`
+}
+
+const normalizeDraftForSubmit = (draft = {}) => ({
+  ...draft,
+  startTime: toBackendDateTime(draft.startTime),
+  endTime: toBackendDateTime(draft.endTime)
+})
+
 const isPastDraftTime = (draft = {}) => {
-  const start = draft?.startTime ? new Date(String(draft.startTime).replace(' ', 'T')) : null
-  if (!start || Number.isNaN(start.getTime())) return false
+  const start = parseDraftDate(draft?.startTime)
+  if (!start) return false
   return start.getTime() < Date.now()
 }
 
@@ -367,14 +400,38 @@ const sendMessage = async () => {
   inputText.value = ''
   loading.value = true
 
+  const timeoutFallback = setTimeout(() => {
+    if (loading.value) {
+      pushMessage('ai', 'AI 正在处理这个请求，当前响应较慢。你可以稍等片刻，或者重新用更简短的描述再试一次。')
+    }
+  }, 25000)
+
   try {
     typing.value = true
-    const { data } = await sendAiMessage({
-      sessionId: sessionId.value,
-      message: text
-    })
+    const [aiResponse, sessionResponse] = await Promise.allSettled([
+      sendAiMessage({
+        sessionId: sessionId.value,
+        message: text
+      }),
+      getAiSession(sessionId.value)
+    ])
 
-    const payload = applyPayload(data?.data || data || {})
+    let payload = {}
+    if (aiResponse.status === 'fulfilled') {
+      const { data } = aiResponse.value
+      payload = applyPayload(data?.data || data || {})
+    }
+
+    if (sessionResponse.status === 'fulfilled') {
+      const history = sessionResponse.value?.data?.data || sessionResponse.value?.data || []
+      if (Array.isArray(history) && history.length > 0) {
+        const latestAi = [...history].reverse().find(item => item.role === 'assistant')
+        if (latestAi?.content && !payload.reply) {
+          payload.reply = latestAi.content
+        }
+      }
+    }
+
     const reply = payload.reply || '我已经收到你的消息。'
     await new Promise(resolve => setTimeout(resolve, 250))
     pushMessage('ai', reply, {
@@ -387,6 +444,7 @@ const sendMessage = async () => {
     const errorMessage = error?.response?.data?.message || error?.response?.data?.data?.message || error?.message || '未知错误'
     pushMessage('ai', `抱歉，请求 AI 服务失败：${errorMessage}`)
   } finally {
+    clearTimeout(timeoutFallback)
     typing.value = false
     loading.value = false
     scrollToBottom()
@@ -414,7 +472,7 @@ const confirmDraft = async (draft) => {
 
     const { data } = await confirmReservationDraft({
       sessionId: sessionId.value,
-      draft
+      draft: normalizeDraftForSubmit(draft)
     })
 
     const result = data?.data || data
@@ -446,8 +504,60 @@ const fillDraftToInput = (draft) => {
   if (draft.laboratoryName) parts.push(`请帮我预约${draft.laboratoryName}`)
   if (draft.participantCount) parts.push(`人数${draft.participantCount}人`)
   if (draft.equipment) parts.push(`需要${draft.equipment}`)
+  if (draft.specialRequirement) parts.push(`特殊要求${draft.specialRequirement}`)
+  if (draft.purpose) parts.push(`用途是${draft.purpose}`)
   if (draft.startTime && draft.endTime) parts.push(`时间是${draft.startTime}到${draft.endTime}`)
   inputText.value = parts.join('，') || '请帮我完善这条预约草稿'
+}
+
+const selectedResourceId = ref(null)
+const pendingResourceChange = ref(null)
+
+const applyResourceSelection = (resource = {}, msg = {}) => {
+  const draft = {
+    labId: resource?.id || null,
+    laboratoryName: resource?.name || '',
+    startTime: msg?.draft?.startTime || '',
+    endTime: msg?.draft?.endTime || '',
+    participantCount: msg?.draft?.participantCount || '',
+    equipment: msg?.draft?.equipment || '',
+    purpose: msg?.draft?.purpose || '',
+    specialRequirement: msg?.draft?.specialRequirement || ''
+  }
+  lastDraft.value = draft
+  selectedResourceId.value = resource?.id || null
+  fillDraftToInput(draft)
+  currentIntent.value = 'reservation_request'
+  ElMessage.success(`已选中 ${resource?.name || '实验室'}，可以继续补充时间并提交预约。`)
+}
+
+const selectResource = async (resource, msg = {}) => {
+  if (!resource) return
+  const currentDraft = lastDraft.value || {}
+  const hasExistingDraft = Boolean(
+    currentDraft.labId || currentDraft.laboratoryName || currentDraft.startTime || currentDraft.endTime || currentDraft.participantCount || currentDraft.purpose || currentDraft.equipment || currentDraft.specialRequirement
+  )
+  const sameResource = selectedResourceId.value === resource.id
+
+  if (hasExistingDraft && !sameResource) {
+    pendingResourceChange.value = { resource, msg }
+    try {
+      await ElMessageBox.confirm(
+        `当前草稿已有内容，切换到「${resource?.name || '该实验室'}」会覆盖现有草稿，是否继续？`,
+        '确认覆盖草稿',
+        { type: 'warning', confirmButtonText: '继续覆盖', cancelButtonText: '取消' }
+      )
+      applyResourceSelection(resource, msg)
+      pendingResourceChange.value = null
+    } catch (error) {
+      if (error !== 'cancel') {
+        ElMessage.error('切换实验室失败，请稍后重试')
+      }
+    }
+    return
+  }
+
+  applyResourceSelection(resource, msg)
 }
 
 const fillFromLatestDraft = () => {

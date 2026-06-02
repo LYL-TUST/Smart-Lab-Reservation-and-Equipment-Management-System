@@ -106,6 +106,8 @@ const buildRecommendReason = (item, payload = {}) => {
   const reasons = []
   const participantCount = Number(payload.participantCount || 0)
   const equipment = String(payload.equipment || '').trim()
+  const purpose = String(payload.purpose || '').trim()
+  const specialRequirement = String(payload.specialRequirement || '').trim()
   if (item.status === 'IDLE') reasons.push('当前状态可预约')
   if (participantCount) {
     if (item.capacity >= participantCount) {
@@ -122,8 +124,10 @@ const buildRecommendReason = (item, payload = {}) => {
       reasons.push(`匹配设备需求「${equipment}」`)
     }
   }
+  if (purpose) reasons.push(`适合用途「${purpose}」`)
+  if (specialRequirement) reasons.push(`特殊要求「${specialRequirement}」`)
   if (item.location) reasons.push(`地点 ${item.location}`)
-  return reasons.slice(0, 3).join('；')
+  return reasons.slice(0, 4).join('；')
 }
 
 const findAvailableResources = async (payload = {}, authHeaders = {}) => {
@@ -202,12 +206,57 @@ const findAvailableResources = async (payload = {}, authHeaders = {}) => {
 const backendBaseUrl = () => process.env.BACKEND_BASE_URL || 'http://localhost:8080'
 
 const backendFetchJson = async (path, options = {}) => {
+  const { headers: optionHeaders = {}, ...fetchOptions } = options
   const response = await fetch(new URL(path, backendBaseUrl()), {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
+    ...fetchOptions,
+    headers: { 'Content-Type': 'application/json', ...optionHeaders }
   })
   const data = await response.json().catch(() => ({}))
   return { response, data }
+}
+
+const extractBackendMessage = (data = {}) => {
+  return data?.message || data?.msg || data?.data?.message || data?.data?.msg || ''
+}
+
+const toDateTimeString = (value) => {
+  const date = value ? new Date(String(value).replace(' ', 'T')) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const toLaboratorySummary = (item = {}) => ({
+  id: item.id,
+  name: item.name,
+  capacity: item.capacity,
+  status: item.status,
+  type: item.type,
+  location: item.location,
+  description: item.description,
+  equipmentCount: item.equipmentCount
+})
+
+const resolveLaboratoryByName = async (laboratoryName, authHeaders = {}) => {
+  const name = String(laboratoryName || '').trim()
+  if (!name) return null
+
+  try {
+    const { data } = await backendFetchJson('/api/laboratory/page?current=1&size=100', {
+      headers: pickAuthHeader(authHeaders)
+    })
+    const records = data?.data?.records || data?.data?.data?.records || data?.records || []
+    if (!Array.isArray(records) || !records.length) return null
+
+    const normalizedName = name.toLowerCase()
+    const exactMatch = records.find(item => String(item.name || '').trim().toLowerCase() === normalizedName)
+    if (exactMatch) return exactMatch
+
+    return records.find(item => String(item.name || '').toLowerCase().includes(normalizedName) || normalizedName.includes(String(item.name || '').toLowerCase())) || null
+  } catch (error) {
+    console.log(`[ai-server] resolve laboratory failed: ${error?.message || error}`)
+    return null
+  }
 }
 
 const debugAuth = (label, authHeader) => {
@@ -278,11 +327,13 @@ const siliconflowChat = async (messages = []) => {
 
 const createDraft = (message = '') => ({
   laboratoryName: '计算机实验室A',
+  labId: null,
   startTime: '2026-06-03 14:00',
   endTime: '2026-06-03 16:00',
   purpose: message || '实验教学',
   participantCount: 20,
-  equipment: '投影仪'
+  equipment: '投影仪',
+  specialRequirement: ''
 })
 
 const getBaseReply = (message = '') => {
@@ -378,9 +429,31 @@ const extractFields = (message = '') => {
 
   const participantMatch = text.match(/(\d+)\s*人/)
   if (participantMatch) draft.participantCount = Number(participantMatch[1])
+  else missingFields.push('participantCount')
 
-  const equipmentMatch = text.match(/(投影仪|多媒体|电脑|通风|实验台|音响)/)
+  const equipmentMatch = text.match(/(投影仪|多媒体|电脑|通风|实验台|音响|白板|麦克风|网络|空调)/)
   if (equipmentMatch) draft.equipment = equipmentMatch[1]
+
+  const purposeMatch = text.match(/(?:用于|做|进行|开展|实验|课程|教学|考试|培训|讨论|答辩|会议|演示)([^，。；\n]*)/)
+  if (purposeMatch?.[1]) {
+    draft.purpose = purposeMatch[1].trim().slice(0, 40)
+  } else {
+    const fallbackPurpose = text.match(/(实验教学|课程实验|课程教学|小组讨论|项目演示|论文答辩|考试)/)
+    if (fallbackPurpose) {
+      draft.purpose = fallbackPurpose[1]
+    } else {
+      missingFields.push('purpose')
+    }
+  }
+
+  const specialRequirements = []
+  if (/安静|静音|隔音/.test(text)) specialRequirements.push('安静环境')
+  if (/投影|大屏|展示/.test(text)) specialRequirements.push('投影展示')
+  if (/网络|WiFi|联网/.test(text)) specialRequirements.push('稳定网络')
+  if (/空调|冷气|温度/.test(text)) specialRequirements.push('空调')
+  if (/白板|黑板/.test(text)) specialRequirements.push('白板/黑板')
+  if (/麦克风|音响/.test(text)) specialRequirements.push('音频设备')
+  draft.specialRequirement = specialRequirements.join('、')
 
   const parsedTime = parseTimeText(text)
   if (parsedTime) {
@@ -426,21 +499,26 @@ const buildSystemPrompt = () => `你是高校实验室预约系统的 AI 小助�
     "endTime": "YYYY-MM-DD HH:mm",
     "purpose": "",
     "participantCount": null,
-    "equipment": ""
+    "equipment": "",
+    "specialRequirement": ""
   },
   "suggestions": ["快捷追问/建议，最多3条"],
   "resourceQuery": {
     "participantCount": null,
-    "equipment": ""
+    "equipment": "",
+    "purpose": "",
+    "specialRequirement": ""
   }
 }
 
 要求：
 - 回复必须自然，不要只输出实验室名字。
-- 当返回资源查询时，reply 要说明为什么推荐这些实验室，尽量提到容量、设备、状态等原因。
-- 当用户表达预约意图时，要尽量提取实验室、时间、人数、设备需求，并主动给出下一步建议。
+- 当返回资源查询时，reply 要说明为什么推荐这些实验室，尽量提到容量、设备、状态、地点等原因。
+- 当用户表达预约意图时，要尽量提取实验室、时间、人数、用途、设备需求、特殊要求，并主动给出下一步建议。
+- 推荐草稿时要尽量完整，至少包含：实验室、时间、人数、用途、设备需求、特殊要求。
 - 信息不完整时，needsClarification 必须为 true，并给出 clarification 和 suggestions。
 - 当用户询问可预约资源时，intent 使用 resource_query，并尽量给出 resourceQuery。
+- 如果已经能确定实验室，就尽量填写 draft.labId。
 - 不要输出 JSON 之外的任何内容。`
 
 const buildReply = async ({ message = '', sessionId = 'default', authHeader = '' } = {}) => {
@@ -452,95 +530,117 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
   }))
 
   const userInput = String(message || '').trim()
-  let parsed = null
+  const baseIntent = detectIntent(userInput)
+  const extracted = extractFields(userInput)
+  const draftSeed = extracted.draft
+  const intentHint = baseIntent === 'general_chat' && extracted.missingFields.length && /预约|预定/.test(userInput)
+    ? 'reservation_request'
+    : baseIntent
+  const shouldQueryResources = intentHint === 'resource_query' || intentHint === 'reservation_request'
+  const shouldCheckConflict = intentHint === 'reservation_request'
+  const shouldCallModel = Boolean(siliconflowApiKey)
 
-  if (siliconflowApiKey) {
-    try {
-      console.log('[ai-server] entering model branch')
-      const completion = await siliconflowChat([
+  const modelPromise = shouldCallModel
+    ? siliconflowChat([
         { role: 'system', content: buildSystemPrompt() },
         ...historyContext,
         { role: 'user', content: userInput }
-      ])
-      const raw = completion?.choices?.[0]?.message?.content || '{}'
-      const rawText = String(raw)
-      const normalized = rawText
-        .replace(/```json\s*/i, '')
-        .replace(/```\s*$/i, '')
-        .trim()
-      console.log(`[ai-server] model raw reply=${rawText}`)
-      console.log(`[ai-server] model raw reply preview=${rawText.slice(0, 500)}`)
-      console.log(`[ai-server] model normalized reply=${normalized}`)
-      parsed = typeof raw === 'string' ? JSON.parse(normalized) : raw
-      console.log(`[ai-server] model parsed intent=${parsed?.intent || 'none'}`)
-      console.log(`[ai-server] model branch elapsed=${Date.now() - startedAt}ms`)
-    } catch (error) {
-      console.log(`[ai-server] model branch failed: ${error?.message || error}`)
-      parsed = null
-    }
-  } else {
-    console.log('[ai-server] entering fallback branch: missing api key')
-  }
+      ]).then((completion) => {
+        const raw = completion?.choices?.[0]?.message?.content || '{}'
+        const rawText = String(raw)
+        const normalized = rawText
+          .replace(/```json\s*/i, '')
+          .replace(/```\s*$/i, '')
+          .trim()
+        console.log(`[ai-server] model raw reply=${rawText}`)
+        console.log(`[ai-server] model raw reply preview=${rawText.slice(0, 500)}`)
+        console.log(`[ai-server] model normalized reply=${normalized}`)
+        const parsed = typeof raw === 'string' ? JSON.parse(normalized) : raw
+        console.log(`[ai-server] model parsed intent=${parsed?.intent || 'none'}`)
+        return parsed
+      }).catch((error) => {
+        console.log(`[ai-server] model branch failed: ${error?.message || error}`)
+        return null
+      })
+    : Promise.resolve(null)
+
+  const resourcePromise = shouldQueryResources
+    ? findAvailableResources({
+        participantCount: draftSeed.participantCount,
+        equipment: draftSeed.equipment,
+        purpose: draftSeed.purpose,
+        specialRequirement: draftSeed.specialRequirement
+      }, { Authorization: authHeader })
+    : Promise.resolve([])
+
+  const conflictPromise = shouldCheckConflict
+    ? detectBackendConflict(draftSeed, { Authorization: authHeader })
+    : Promise.resolve(null)
+
+  const [parsed, resources, conflict] = await Promise.all([
+    modelPromise,
+    resourcePromise,
+    conflictPromise
+  ])
 
   if (parsed && typeof parsed === 'object') {
-    const intent = parsed.intent || 'general_chat'
-    const resources = intent === 'resource_query'
-      ? await findAvailableResources({
-          participantCount: parsed.resourceQuery?.participantCount,
-          equipment: parsed.resourceQuery?.equipment
-        }, { Authorization: authHeader })
-      : []
+    const intent = parsed.intent || intentHint || 'general_chat'
+    const modelDraft = parsed.draft || {}
+    const parsedResourceQuery = parsed.resourceQuery || {}
+    const resourceQueryInput = {
+      participantCount: parsedResourceQuery.participantCount ?? draftSeed.participantCount,
+      equipment: parsedResourceQuery.equipment ?? draftSeed.equipment,
+      purpose: parsedResourceQuery.purpose ?? draftSeed.purpose,
+      specialRequirement: parsedResourceQuery.specialRequirement ?? draftSeed.specialRequirement
+    }
+    const parsedResources = intent === 'resource_query'
+      ? resources
+      : (intent === 'reservation_request'
+        ? resources
+        : [])
 
-    const conflict = intent === 'reservation_request' && parsed.draft
-      ? await detectBackendConflict(parsed.draft, { Authorization: authHeader })
-      : null
-
-    const resourceNames = resources.slice(0, 4).map(item => item.name).join('、')
-    const resourceSummary = resources.length
-      ? `我帮你筛选到 ${resources.length} 个比较合适的实验室：${resourceNames}。`
-      : ''
-    const resourceReasons = resources.slice(0, 3).map(item => item.reason).filter(Boolean)
+    const resourceNames = parsedResources.slice(0, 4).map(item => item.name).join('、')
+    const resourceReasons = parsedResources.slice(0, 3).map(item => item.reason).filter(Boolean)
     const resourceIntro = resourceReasons.length
-      ? `我帮你筛选到 ${resources.length} 个比较合适的实验室：${resourceNames}。推荐理由：${resourceReasons.join('；')}。`
-      : resourceSummary
+      ? `我帮你筛选到 ${parsedResources.length} 个比较合适的实验室：${resourceNames}。推荐理由：${resourceReasons.join('；')}。`
+      : (parsedResources.length ? `我帮你筛选到 ${parsedResources.length} 个比较合适的实验室：${resourceNames}。` : '')
 
     const isReservationIntent = intent === 'reservation_request'
     const isGeneralResourceQuestion = intent === 'resource_query'
-    const missingDraftInfo = isReservationIntent && (!parsed.draft?.laboratoryName || !parsed.draft?.startTime || !parsed.draft?.endTime)
+    const missingDraftInfo = isReservationIntent && (!modelDraft.laboratoryName || !modelDraft.startTime || !modelDraft.endTime)
     const modelReply = String(parsed.reply || '').trim()
-    const draftFields = parsed.draft || {}
-    const draftConfidence = [draftFields.laboratoryName, draftFields.startTime, draftFields.endTime, draftFields.participantCount, draftFields.equipment].filter(Boolean).length
+    const draftFields = modelDraft
+    const draftConfidence = [draftFields.labId, draftFields.laboratoryName, draftFields.startTime, draftFields.endTime, draftFields.participantCount, draftFields.equipment, draftFields.purpose, draftFields.specialRequirement].filter(Boolean).length
     const reservationReason = draftFields.laboratoryName
       ? `我先帮你看了${draftFields.laboratoryName}附近的可用情况。`
       : '我先帮你筛了几间适合你需求的实验室。'
-    const reservationFollowUp = draftConfidence >= 3
-      ? '如果你确认具体时间，我可以继续帮你完善草稿并提交。'
-      : '如果你确认具体时间和实验室，我可以继续帮你生成草稿。'
+    const reservationFollowUp = draftConfidence >= 4
+      ? '如果你确认这条草稿，我可以继续帮你提交。'
+      : '如果你确认具体时间和实验室，我可以继续帮你完善草稿。'
 
     const assistantMsg = {
       role: 'assistant',
       content: modelReply || resourceIntro || reservationReason || '我已经收到你的消息。',
       draft: isReservationIntent ? {
         ...draftFields,
-        ...(draftFields.participantCount ? { participantCount: Number(draftFields.participantCount) } : {}),
-        ...(draftFields.laboratoryName ? { laboratoryName: draftFields.laboratoryName } : {}),
-        ...(draftFields.startTime ? { startTime: draftFields.startTime } : {}),
-        ...(draftFields.endTime ? { endTime: draftFields.endTime } : {})
+        ...(draftFields.labId ? { labId: draftFields.labId } : {}),
+        ...(draftFields.participantCount ? { participantCount: Number(draftFields.participantCount) } : {})
       } : null,
-      resources: resources.length ? resources : [],
+      resources: parsedResources.length ? parsedResources : [],
       intent,
       needsClarification: Boolean(parsed.needsClarification || conflict?.hasConflict || missingDraftInfo),
       clarification: conflict?.message || parsed.clarification || '',
       suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : [],
-      resourceReasons
+      resourceReasons,
+      resourceQuery: resourceQueryInput
     }
 
     if (isGeneralResourceQuestion) {
-      if (resources.length) {
+      if (parsedResources.length) {
         const reasonText = resourceReasons.length ? `推荐理由：${resourceReasons.join('；')}。` : ''
-        assistantMsg.content = modelReply || `可以，当前比较合适的有：${resourceNames}。${reasonText}如果你告诉我人数或是否需要投影仪，我可以继续缩小范围。`
+        assistantMsg.content = modelReply || `可以，当前比较合适的有：${resourceNames}。${reasonText}如果你告诉我人数、用途或是否需要投影仪，我可以继续缩小范围。`
       } else {
-        assistantMsg.content = modelReply || '我暂时没有筛到合适的实验室，你可以告诉我人数、时间或设备需求，我再继续帮你找。'
+        assistantMsg.content = modelReply || '我暂时没有筛到合适的实验室，你可以告诉我人数、用途、时间或设备需求，我再继续帮你找。'
       }
     }
 
@@ -551,45 +651,41 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
       if (!modelReply) {
         assistantMsg.content = `${reservationReason}${reservationFollowUp}`
       }
+      if (draftFields.labId) {
+        assistantMsg.draft.labId = draftFields.labId
+      }
     }
 
     sessions.set(sessionId, [...session, { role: 'user', content: userInput }, assistantMsg])
+    console.log(`[ai-server] chat total elapsed=${Date.now() - startedAt}ms`)
     return assistantMsg
   }
 
-  const intent = detectIntent(userInput)
-  const { draft, missingFields } = extractFields(userInput)
+  const intent = intentHint
+  const { draft, missingFields } = extracted
 
   let content = getBaseReply(userInput)
-  let resources = []
+  const resourcesFallback = resources
   let needsClarification = false
   let clarification = ''
 
   if (intent === 'reservation_request') {
-    resources = await findAvailableResources(draft, { Authorization: authHeader })
     if (missingFields.length) {
       needsClarification = true
-      clarification = '我还需要你补充一些信息，比如具体实验室名称和预约时间。'
+      clarification = '我还需要你补充一些信息，比如具体实验室名称、人数、用途和预约时间。'
+      content = clarification
+    } else if (conflict?.hasConflict) {
+      needsClarification = true
+      clarification = conflict.message || '当前时间段存在冲突，请尝试更换时间或实验室。'
       content = clarification
     } else {
-      const conflict = await detectBackendConflict(draft, { Authorization: authHeader })
-      if (conflict?.hasConflict) {
-        needsClarification = true
-        clarification = conflict.message || '当前时间段存在冲突，请尝试更换时间或实验室。'
-        content = clarification
-      } else {
-        content = '我已经根据你的描述生成了预约草稿，请核对后确认提交。'
-      }
+      content = '我已经根据你的描述生成了预约草稿，请核对后确认提交。'
     }
   }
 
   if (intent === 'resource_query') {
-    resources = await findAvailableResources({
-      participantCount: draft.participantCount,
-      equipment: draft.equipment
-    }, { Authorization: authHeader })
-    content = resources.length
-      ? `当前可预约的资源有：${resources.map(item => item.name).join('、')}。`
+    content = resourcesFallback.length
+      ? `当前可预约的资源有：${resourcesFallback.map(item => item.name).join('、')}。`
       : '当前没有找到满足条件的可预约资源。'
   }
 
@@ -609,16 +705,25 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
   const assistantMsg = {
     role: 'assistant',
     content,
-    draft: intent === 'reservation_request' && !needsClarification ? draft : null,
-    resources,
+    draft: intent === 'reservation_request' && !needsClarification ? {
+      ...draft,
+      ...(draft.labId ? { labId: draft.labId } : {})
+    } : null,
+    resources: resourcesFallback,
     intent,
     needsClarification,
     clarification,
     suggestions: intent === 'reservation_request' && missingFields.length ? [
       '请告诉我具体实验室名称',
       '请告诉我预约日期和时间',
-      '请告诉我人数和设备需求'
-    ] : []
+      '请告诉我人数、用途和设备需求'
+    ] : [],
+    resourceQuery: {
+      participantCount: draft.participantCount || null,
+      equipment: draft.equipment || '',
+      purpose: draft.purpose || '',
+      specialRequirement: draft.specialRequirement || ''
+    }
   }
 
   if (intent === 'reservation_request' && missingFields.includes('time')) {
@@ -630,6 +735,7 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
   }
 
   sessions.set(sessionId, [...session, { role: 'user', content: userInput }, assistantMsg])
+  console.log(`[ai-server] chat total elapsed=${Date.now() - startedAt}ms`)
 
   return assistantMsg
 }
@@ -707,8 +813,20 @@ app.post('/api/ai/reservation/confirm', async (req, res) => {
   }
 
   try {
+    const resolvedLab = draft.labId ? { id: draft.labId, name: draft.laboratoryName } : await resolveLaboratoryByName(draft.laboratoryName, { Authorization: req.headers.authorization || '' })
+    if (!resolvedLab?.id) {
+      res.status(400).json({
+        code: 400,
+        data: {
+          success: false,
+          message: `未找到名为「${draft.laboratoryName}」的实验室，请先选择具体实验室后再提交。`
+        }
+      })
+      return
+    }
+
     const payload = {
-      labId: draft.labId || draft.laboratoryId || null,
+      labId: resolvedLab.id,
       startTime: draft.startTime,
       endTime: draft.endTime,
       purpose: draft.purpose || 'AI 小助手预约',
@@ -716,16 +834,23 @@ app.post('/api/ai/reservation/confirm', async (req, res) => {
       equipment: draft.equipment || '',
       type: draft.type || 'SINGLE'
     }
-    const { response, data } = await backendFetchJson('/reservation/single', {
+    const { response, data } = await backendFetchJson('/api/reservation/single', {
       method: 'POST',
+      headers: {
+        ...pickAuthHeader({ Authorization: req.headers.authorization || '' }),
+        Accept: 'application/json'
+      },
       body: JSON.stringify(payload)
     })
-    res.status(response.ok ? 200 : 400).json({
-      code: response.ok ? 200 : 400,
+    const success = response.ok && (data?.code === 200 || data?.success !== false)
+    const message = extractBackendMessage(data) || extractBackendMessage(data?.data) || (success ? '预约提交成功，等待审批。' : '预约提交失败，请检查填写信息。')
+    const reservationData = data?.data?.data ?? data?.data ?? null
+    res.status(success ? 200 : response.status || 400).json({
+      code: success ? 200 : response.status || 400,
       data: {
-        success: response.ok,
-        message: data?.message || data?.msg || '预约提交完成',
-        reservation: data?.data || null
+        success,
+        message,
+        reservation: reservationData
       }
     })
   } catch (error) {
@@ -733,14 +858,25 @@ app.post('/api/ai/reservation/confirm', async (req, res) => {
       code: 500,
       data: {
         success: false,
-        message: '调用业务后端失败，请确认 Spring Boot 服务已启动。'
+        message: `调用业务后端失败：${error?.message || '请确认 Spring Boot 服务已启动。'}`
       }
     })
   }
 })
 
-app.post('/api/ai/resources/available', (req, res) => {
-  res.json({ code: 200, data: findAvailableResources(req.body || {}) })
+app.post('/api/ai/resources/available', async (req, res) => {
+  const startedAt = Date.now()
+  try {
+    const data = await findAvailableResources(req.body || {}, { Authorization: req.headers.authorization || '' })
+    console.log(`[ai-server] resources available elapsed=${Date.now() - startedAt}ms`)
+    res.json({ code: 200, data })
+  } catch (error) {
+    console.log(`[ai-server] resources available failed: ${error?.message || error}`)
+    res.status(500).json({
+      code: 500,
+      data: []
+    })
+  }
 })
 
 app.post('/api/ai/intent/parse', async (req, res) => {

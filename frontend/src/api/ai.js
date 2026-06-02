@@ -3,7 +3,7 @@ import { useUserStore } from '../stores/user'
 
 const aiRequest = axios.create({
   baseURL: 'http://localhost:3001/api/ai',
-  timeout: 45000,
+  timeout: 60000,
   withCredentials: true
 })
 
