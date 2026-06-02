@@ -22,7 +22,7 @@
       </template>
 
       <!-- 搜索栏 -->
-      <el-form :inline="true" :model="searchForm" class="search-form">
+      <el-form v-if="viewMode === 'list'" :inline="true" :model="searchForm" class="search-form">
         <el-form-item label="实验室">
           <el-input v-model="searchForm.laboratoryName" placeholder="请输入实验室名称" clearable />
         </el-form-item>
@@ -124,28 +124,28 @@
       <!-- 日历视图 -->
       <div v-if="viewMode === 'calendar'" class="calendar-container">
         <div class="calendar-filters">
-          <el-form :inline="true" :model="calendarFilters" class="calendar-search-form">
-            <el-form-item label="实验室">
-              <el-select v-model="calendarFilters.labId" placeholder="全部实验室" clearable style="width: 200px" @change="loadCalendarEvents(currentCalendarStart, currentCalendarEnd)">
-                <el-option
-                  v-for="lab in laboratories"
-                  :key="lab.id"
-                  :label="lab.name || lab.laboratoryName || `实验室${lab.id}`"
-                  :value="lab.id"
-                />
-              </el-select>
+          <el-form :inline="true" class="calendar-search-form">
+            <el-form-item label="快速跳转">
+              <el-date-picker
+                v-model="calendarJumpDate"
+                type="date"
+                placeholder="选择日期"
+                value-format="YYYY-MM-DD"
+                style="width: 180px"
+                clearable
+                @change="handleCalendarJump"
+              />
             </el-form-item>
-            <el-form-item label="状态">
-              <el-select v-model="calendarFilters.status" placeholder="全部状态" clearable style="width: 150px" @change="loadCalendarEvents(currentCalendarStart, currentCalendarEnd)">
-                <el-option label="待审核" value="PENDING" />
-                <el-option label="已通过" value="APPROVED" />
-                <el-option label="已完成" value="COMPLETED" />
-              </el-select>
+            <el-form-item>
+              <el-button :icon="Refresh" @click="jumpToToday">今天</el-button>
             </el-form-item>
           </el-form>
         </div>
         <div class="calendar-wrapper" v-loading="calendarLoading">
-          <FullCalendar :options="calendarOptions" />
+          <FullCalendar ref="calendarRef" :options="calendarOptions" />
+        </div>
+        <div class="calendar-tip">
+          选择日期后可快速跳转到对应的预约日历位置，也可以点击“今天”回到当前日期。
         </div>
       </div>
     </el-card>
@@ -266,6 +266,8 @@ const userStore = useUserStore()
 const viewMode = ref('list') // 'list' 或 'calendar'
 const calendarLoading = ref(false)
 const calendarEvents = ref([])
+const calendarRef = ref(null)
+const calendarJumpDate = ref('')
 const currentCalendarStart = ref('')
 const currentCalendarEnd = ref('')
 
@@ -699,6 +701,35 @@ const formatCalendarDate = (date) => {
   return `${year}-${month}-${day}`
 }
 
+const jumpCalendarToDate = async (dateValue) => {
+  if (!dateValue) return
+  const calendarApi = calendarRef.value?.getApi?.()
+  if (!calendarApi) return
+
+  const targetDate = new Date(`${dateValue}T00:00:00`)
+  if (Number.isNaN(targetDate.getTime())) return
+
+  calendarApi.gotoDate(targetDate)
+  const start = formatCalendarDate(targetDate)
+  const end = formatCalendarDate(targetDate)
+  currentCalendarStart.value = start
+  currentCalendarEnd.value = end
+  await loadCalendarEvents(start, end)
+}
+
+const handleCalendarJump = async (value) => {
+  calendarJumpDate.value = value || ''
+  if (value) {
+    await jumpCalendarToDate(value)
+  }
+}
+
+const jumpToToday = async () => {
+  const today = formatCalendarDate(new Date())
+  calendarJumpDate.value = today
+  await jumpCalendarToDate(today)
+}
+
 // 加载日历事件
 const loadCalendarEvents = async (start, end) => {
   calendarLoading.value = true
@@ -770,6 +801,9 @@ const handleCalendarDatesSet = (info) => {
   const end = formatCalendarDate(endDate)
   currentCalendarStart.value = start
   currentCalendarEnd.value = end
+  if (!calendarJumpDate.value) {
+    calendarJumpDate.value = start
+  }
   loadCalendarEvents(start, end)
 }
 
@@ -816,7 +850,11 @@ onMounted(async () => {
   
   // 如果默认是日历视图，加载日历数据
   if (viewMode.value === 'calendar') {
-    loadCalendarEvents()
+    const today = formatCalendarDate(new Date())
+    calendarJumpDate.value = today
+    currentCalendarStart.value = today
+    currentCalendarEnd.value = today
+    loadCalendarEvents(today, today)
   }
 })
 </script>
@@ -858,6 +896,12 @@ onMounted(async () => {
 
 .calendar-wrapper {
   min-height: 600px;
+}
+
+.calendar-tip {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* FullCalendar 样式调整 */
