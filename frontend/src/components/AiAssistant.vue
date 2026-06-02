@@ -4,7 +4,7 @@
       v-model="visible"
       title="AI 小助手"
       direction="rtl"
-      size="440px"
+      size="min(100vw, 760px)"
       class="ai-drawer"
       :with-header="true"
       :destroy-on-close="false"
@@ -28,153 +28,180 @@
           <el-button size="small" @click="resetConversation">清空会话</el-button>
         </div>
 
-        <div v-if="suggestions.length" class="suggestion-card">
-          <div class="section-title">AI 建议你补充的信息</div>
-          <div class="suggestion-list">
-            <el-tag
-              v-for="item in suggestions"
-              :key="item"
-              class="suggestion-item"
-              effect="plain"
-              @click="applyQuickPrompt(item)"
-            >
-              {{ item }}
-            </el-tag>
-          </div>
-        </div>
-
-        <el-collapse v-model="historyPanel">
-          <el-collapse-item name="history">
-            <template #title>
-              <div class="history-title">
-                <span>会话历史</span>
-                <el-tag size="small" effect="plain">{{ messages.length }} 条消息</el-tag>
-              </div>
-            </template>
-            <div class="history-list">
-              <div v-for="item in historyPreview" :key="item.id" class="history-item">
-                <div class="history-row">
-                  <span class="history-role">{{ item.role === 'user' ? '我' : 'AI' }}</span>
-                  <span class="history-time">{{ item.time }}</span>
-                </div>
-                <div class="history-content">{{ item.content }}</div>
-              </div>
-            </div>
-          </el-collapse-item>
-        </el-collapse>
-
-        <div ref="messageListRef" class="message-list">
-          <div
-            v-for="msg in messages"
-            :key="msg.id"
-            :class="['message-item', msg.role]"
-          >
-            <div class="message-bubble">
-              <div class="message-role-row">
-                <div class="message-role">{{ msg.role === 'user' ? '我' : 'AI 助手' }}</div>
-                <div class="message-time">{{ msg.time }}</div>
-              </div>
-              <div class="message-content">{{ msg.content }}</div>
-
-              <div v-if="msg.resources && msg.resources.length" class="resource-card">
-                <div class="section-title">可预约资源</div>
-                <button
-                  v-for="resource in msg.resources"
-                  :key="resource.id"
-                  class="resource-item resource-selectable"
-                  :class="{ selected: selectedResourceId === resource.id }"
-                  type="button"
-                  @click="selectResource(resource, msg)"
+        <div class="assistant-body">
+          <div class="assistant-main">
+            <div v-if="suggestions.length" class="suggestion-card">
+              <div class="section-title">AI 建议你补充的信息</div>
+              <div class="suggestion-list">
+                <el-tag
+                  v-for="item in suggestions"
+                  :key="item"
+                  class="suggestion-item"
+                  effect="plain"
+                  @click="applyQuickPrompt(item)"
                 >
-                  <div class="resource-top-row">
-                    <div class="resource-name">
-                      {{ resource.name }}
-                      <el-tag v-if="selectedResourceId === resource.id" size="small" effect="dark" type="success" class="selected-tag">已选中</el-tag>
+                  {{ item }}
+                </el-tag>
+              </div>
+            </div>
+
+            <el-collapse v-model="historyPanel">
+              <el-collapse-item name="history">
+                <template #title>
+                  <div class="history-title">
+                    <span>会话历史</span>
+                    <el-tag size="small" effect="plain">{{ messages.length }} 条消息</el-tag>
+                  </div>
+                </template>
+                <div class="history-list">
+                  <div v-for="item in historyPreview" :key="item.id" class="history-item">
+                    <div class="history-row">
+                      <span class="history-role">{{ item.role === 'user' ? '我' : 'AI' }}</span>
+                      <span class="history-time">{{ item.time }}</span>
                     </div>
-                    <el-tag size="small" effect="plain" type="success">{{ getRecommendLevel(resource) }}</el-tag>
+                    <div class="history-content">{{ item.content }}</div>
                   </div>
-                  <div class="resource-meta">
-                    容量 {{ resource.capacity }} 人 · {{ resource.status }}
-                  </div>
-                  <div v-if="resource.reason" class="resource-reason">
-                    推荐理由：{{ resource.reason }}
-                  </div>
-                  <div class="resource-hint">点击即可选中并填入预约草稿</div>
-                </button>
-              </div>
-
-              <div v-if="msg.suggestions && msg.suggestions.length" class="suggestion-card message-suggestion-card">
-                <div class="section-title">继续追问 / 快捷建议</div>
-                <div class="suggestion-list">
-                  <el-tag
-                    v-for="item in msg.suggestions"
-                    :key="item"
-                    class="suggestion-item"
-                    effect="plain"
-                    @click="applyQuickPrompt(item)"
-                  >
-                    {{ item }}
-                  </el-tag>
                 </div>
-              </div>
+              </el-collapse-item>
+            </el-collapse>
 
-              <div v-if="msg.clarification" class="clarification-card">
-                <div class="section-title">需要补充</div>
-                <div class="clarification-text">{{ msg.clarification }}</div>
-              </div>
+            <div ref="messageListRef" class="message-list">
+              <div
+                v-for="msg in messages"
+                :key="msg.id"
+                :class="['message-item', msg.role]"
+              >
+                <div class="message-bubble">
+                  <div class="message-role-row">
+                    <div class="message-role">{{ msg.role === 'user' ? '我' : 'AI 助手' }}</div>
+                    <div class="message-time">{{ msg.time }}</div>
+                  </div>
+                  <div class="message-content">{{ msg.content }}</div>
 
-              <div v-if="msg.draft" class="draft-card">
-                <div class="section-title">预约草稿</div>
-                <div class="draft-item" v-for="(value, key) in displayDraftFields(msg.draft)" :key="key">
-                  <span class="draft-key">{{ labelMap[key] || key }}</span>
-                  <span class="draft-value">{{ value }}</span>
-                </div>
-                <div v-if="!isDraftComplete(msg.draft)" class="draft-missing">
-                  <div class="section-title">还缺少的信息</div>
-                  <div class="missing-tag-list">
-                    <el-tag
-                      v-for="field in getMissingDraftFields(msg.draft)"
-                      :key="field"
-                      type="warning"
-                      effect="plain"
-                      class="missing-tag"
+                  <div v-if="msg.resources && msg.resources.length" class="resource-card">
+                    <div class="section-title">可预约资源</div>
+                    <button
+                      v-for="resource in msg.resources"
+                      :key="resource.id"
+                      class="resource-item resource-selectable"
+                      :class="{ selected: selectedResourceId === resource.id }"
+                      type="button"
+                      @click="selectResource(resource, msg)"
                     >
-                      {{ field }}
-                    </el-tag>
+                      <div class="resource-top-row">
+                        <div class="resource-name">
+                          {{ resource.name }}
+                          <el-tag v-if="selectedResourceId === resource.id" size="small" effect="dark" type="success" class="selected-tag">已选中</el-tag>
+                        </div>
+                        <el-tag size="small" effect="plain" type="success">{{ getRecommendLevel(resource) }}</el-tag>
+                      </div>
+                      <div class="resource-meta">
+                        容量 {{ resource.capacity }} 人 · {{ resource.status }}
+                      </div>
+                      <div v-if="resource.reason" class="resource-reason">
+                        推荐理由：{{ resource.reason }}
+                      </div>
+                      <div class="resource-hint">点击即可选中并填入预约草稿</div>
+                    </button>
                   </div>
-                  <div class="clarification-text missing-tip">
-                    请先补全后再提交，我也可以继续帮你追问这些信息。
+
+                  <div v-if="msg.suggestions && msg.suggestions.length" class="suggestion-card message-suggestion-card">
+                    <div class="section-title">继续追问 / 快捷建议</div>
+                    <div class="suggestion-list">
+                      <el-tag
+                        v-for="item in msg.suggestions"
+                        :key="item"
+                        class="suggestion-item"
+                        effect="plain"
+                        @click="applyQuickPrompt(item)"
+                      >
+                        {{ item }}
+                      </el-tag>
+                    </div>
                   </div>
-                </div>
-                <div class="draft-actions">
-                  <el-button v-if="isDraftComplete(msg.draft)" size="small" type="primary" @click="confirmDraft(msg.draft)">确认提交</el-button>
-                  <el-button size="small" @click="fillDraftToInput(msg.draft)">编辑后再确认</el-button>
+
+                  <div v-if="msg.clarification" class="clarification-card">
+                    <div class="section-title">需要补充</div>
+                    <div class="clarification-text">{{ msg.clarification }}</div>
+                  </div>
+
+                  <div v-if="msg.draft" class="draft-card">
+                    <div class="section-title">预约草稿</div>
+                    <div class="draft-item" v-for="(value, key) in displayDraftFields(msg.draft)" :key="key">
+                      <span class="draft-key">{{ labelMap[key] || key }}</span>
+                      <span class="draft-value">{{ value }}</span>
+                    </div>
+                    <div v-if="!isDraftComplete(msg.draft)" class="draft-missing">
+                      <div class="section-title">还缺少的信息</div>
+                      <div class="missing-tag-list">
+                        <el-tag
+                          v-for="field in getMissingDraftFields(msg.draft)"
+                          :key="field"
+                          type="warning"
+                          effect="plain"
+                          class="missing-tag"
+                        >
+                          {{ field }}
+                        </el-tag>
+                      </div>
+                      <div class="clarification-text missing-tip">
+                        请先补全后再提交，我也可以继续帮你追问这些信息。
+                      </div>
+                    </div>
+                    <div class="draft-actions">
+                      <el-button v-if="isDraftComplete(msg.draft)" size="small" type="primary" @click="confirmDraft(msg.draft)">确认提交</el-button>
+                      <el-button size="small" @click="fillDraftToInput(msg.draft)">编辑后再确认</el-button>
+                    </div>
+                  </div>
+
+                  <div v-if="msg.reservationResult" class="result-card">
+                    <div class="section-title">预约结果</div>
+                    <div class="result-status" :class="msg.reservationResult.success ? 'success' : 'fail'">
+                      {{ msg.reservationResult.success ? '提交成功' : '提交失败' }}
+                    </div>
+                    <div class="result-message">{{ msg.reservationResult.message }}</div>
+                    <div v-if="msg.reservationResult.reservation" class="result-meta">
+                      <div v-for="(value, key) in msg.reservationResult.reservation" :key="key" class="result-item">
+                        <span class="result-key">{{ labelMap[key] || key }}</span>
+                        <span class="result-value">{{ value }}</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              <div v-if="msg.reservationResult" class="result-card">
-                <div class="section-title">预约结果</div>
-                <div class="result-status" :class="msg.reservationResult.success ? 'success' : 'fail'">
-                  {{ msg.reservationResult.success ? '提交成功' : '提交失败' }}
-                </div>
-                <div class="result-message">{{ msg.reservationResult.message }}</div>
-                <div v-if="msg.reservationResult.reservation" class="result-meta">
-                  <div v-for="(value, key) in msg.reservationResult.reservation" :key="key" class="result-item">
-                    <span class="result-key">{{ labelMap[key] || key }}</span>
-                    <span class="result-value">{{ value }}</span>
+              <div v-if="loading || typing" class="message-item ai">
+                <div class="message-bubble typing-bubble">
+                  <div class="message-role-row">
+                    <div class="message-role">AI 助手</div>
+                    <div class="message-time">正在输入</div>
+                  </div>
+                  <div class="typing-indicator">
+                    <span></span><span></span><span></span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-          <div v-if="loading || typing" class="message-item ai">
-            <div class="message-bubble typing-bubble">
-              <div class="message-role-row">
-                <div class="message-role">AI 助手</div>
-                <div class="message-time">正在输入</div>
+
+          <div class="assistant-side">
+            <div class="side-card side-guide">
+              <div class="section-title">使用提示</div>
+              <ul class="guide-list">
+                <li>先描述实验室、时间和人数，AI 会自动生成草稿</li>
+                <li>选中右侧资源卡后，可以直接带入草稿</li>
+                <li>草稿完整后再点确认提交，减少误操作</li>
+              </ul>
+            </div>
+
+            <div v-if="lastDraft" class="side-card side-draft">
+              <div class="section-title">当前草稿</div>
+              <div v-for="(value, key) in displayDraftFields(lastDraft)" :key="key" class="side-draft-item">
+                <span class="draft-key">{{ labelMap[key] || key }}</span>
+                <span class="draft-value">{{ value }}</span>
               </div>
-              <div class="typing-indicator">
-                <span></span><span></span><span></span>
+              <div class="side-draft-footer">
+                <el-button size="small" type="primary" @click="fillFromLatestDraft">填入草稿</el-button>
+                <el-button size="small" @click="resetConversation">重新开始</el-button>
               </div>
             </div>
           </div>
@@ -184,7 +211,8 @@
           <el-input
             v-model="inputText"
             type="textarea"
-            :rows="3"
+            :rows="4"
+            resize="none"
             placeholder="请输入你的问题，例如：帮我预约周三下午 2 点的实验室"
             @keydown.enter.exact.prevent="sendMessage"
           />
@@ -628,6 +656,7 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100%;
   gap: 16px;
+  min-height: 0;
 }
 
 .assistant-header {
@@ -635,6 +664,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .header-meta {
@@ -658,14 +688,70 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  flex-shrink: 0;
 }
 
+.assistant-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+.assistant-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 12px;
+}
+
+.assistant-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.side-card,
 .suggestion-card,
 .history-list {
   padding: 12px;
   border-radius: 14px;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
+}
+
+.side-card {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.03);
+}
+
+.side-guide {
+  background: linear-gradient(180deg, rgba(64, 158, 255, 0.08), rgba(64, 158, 255, 0.02));
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  font-size: 13px;
+}
+
+.side-draft-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.side-draft-footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
 }
 
 .history-title {
@@ -680,6 +766,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .history-item {
@@ -723,12 +811,12 @@ onUnmounted(() => {
 
 .message-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding-right: 4px;
-  max-height: 58vh;
 }
 
 .message-item {
@@ -933,6 +1021,7 @@ onUnmounted(() => {
 .input-area {
   border-top: 1px solid var(--border-color);
   padding-top: 12px;
+  flex-shrink: 0;
 }
 
 .input-actions {
@@ -940,6 +1029,49 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+:deep(.ai-drawer .el-drawer__body) {
+  padding: 16px 18px 18px;
+  height: calc(100vh - 54px);
+  overflow: hidden;
+}
+
+:deep(.ai-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+@media (max-width: 1200px) {
+  .assistant-body {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-side {
+    order: -1;
+  }
+}
+
+@media (max-width: 640px) {
+  :deep(.ai-drawer) {
+    width: 100vw !important;
+  }
+
+  :deep(.ai-drawer .el-drawer__body) {
+    padding: 12px;
+  }
+
+  .assistant-header,
+  .input-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .input-actions .el-button {
+    width: 100%;
+  }
 }
 
 @keyframes bounce {

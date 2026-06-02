@@ -126,17 +126,17 @@
         <div class="calendar-filters">
           <el-form :inline="true" :model="calendarFilters" class="calendar-search-form">
             <el-form-item label="实验室">
-              <el-select v-model="calendarFilters.labId" placeholder="全部实验室" clearable style="width: 200px" @change="loadCalendarEvents">
+              <el-select v-model="calendarFilters.labId" placeholder="全部实验室" clearable style="width: 200px" @change="loadCalendarEvents(currentCalendarStart, currentCalendarEnd)">
                 <el-option
                   v-for="lab in laboratories"
                   :key="lab.id"
-                  :label="lab.name"
+                  :label="lab.name || lab.laboratoryName || `实验室${lab.id}`"
                   :value="lab.id"
                 />
               </el-select>
             </el-form-item>
             <el-form-item label="状态">
-              <el-select v-model="calendarFilters.status" placeholder="全部状态" clearable style="width: 150px" @change="loadCalendarEvents">
+              <el-select v-model="calendarFilters.status" placeholder="全部状态" clearable style="width: 150px" @change="loadCalendarEvents(currentCalendarStart, currentCalendarEnd)">
                 <el-option label="待审核" value="PENDING" />
                 <el-option label="已通过" value="APPROVED" />
                 <el-option label="已完成" value="COMPLETED" />
@@ -266,6 +266,8 @@ const userStore = useUserStore()
 const viewMode = ref('list') // 'list' 或 'calendar'
 const calendarLoading = ref(false)
 const calendarEvents = ref([])
+const currentCalendarStart = ref('')
+const currentCalendarEnd = ref('')
 
 // 计算当前用户角色
 const userRole = computed(() => userStore.userInfo?.role)
@@ -317,19 +319,24 @@ const calendarOptions = computed(() => ({
   eventClick: handleCalendarEventClick,
   datesSet: handleCalendarDatesSet,
   eventDisplay: 'block',
+  eventOrder: 'start,-duration,title',
+  eventOrderStrict: true,
+  eventMinHeight: 28,
+  eventShortHeight: 18,
   eventTimeFormat: {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false
   },
-  slotMinTime: '06:00:00',
+  slotMinTime: '00:00:00',
   slotMaxTime: '24:00:00',
-  allDaySlot: false,
+  allDaySlot: true,
   weekends: true,
   editable: false,
   selectable: false,
   dayMaxEvents: true,
-  moreLinkClick: 'popover'
+  moreLinkClick: 'popover',
+  displayEventTime: true
 }))
 
 const form = reactive({
@@ -684,47 +691,65 @@ const handleDialogClose = () => {
   currentRow.value = {}
 }
 
+const formatCalendarDate = (date) => {
+  if (!date) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 // 加载日历事件
 const loadCalendarEvents = async (start, end) => {
   calendarLoading.value = true
   try {
     const params = {}
-    
+
     // 如果提供了日期范围，使用提供的；否则使用当前视图的日期范围
     if (start && end) {
-      params.start = start.split('T')[0]
-      params.end = end.split('T')[0]
+      params.start = start
+      params.end = end
     }
-    
+
     if (calendarFilters.labId) {
       params.labId = calendarFilters.labId
     }
-    
+
     if (calendarFilters.status) {
       params.status = calendarFilters.status
     }
-    
+
     const response = await getReservationCalendar(params)
-    
+
     if (response && response.data) {
+      const eventList = Array.isArray(response.data) ? response.data : (response.data.records || response.data.list || [])
       // 转换数据格式为 FullCalendar 需要的格式
-      calendarEvents.value = response.data.map(event => ({
-        id: event.id.toString(),
-        title: event.title || `${event.laboratoryName || '未知实验室'} - ${event.purpose || '预约'}`,
-        start: event.start,
-        end: event.end,
-        backgroundColor: event.backgroundColor || event.color,
-        borderColor: event.borderColor || event.color,
-        textColor: event.textColor || '#000',
-        extendedProps: {
-          labId: event.labId,
-          laboratoryName: event.laboratoryName,
-          status: event.status,
-          type: event.type,
-          purpose: event.purpose,
-          reservationId: event.id
+      calendarEvents.value = eventList.map(event => {
+        const isAllDay = Boolean(event.allDay)
+        const startTime = event.start
+        const endTime = event.end || event.start
+        const eventTitle = event.title || `${event.laboratoryName || '未知实验室'} - ${event.purpose || '预约'}`
+        return {
+          id: event.id.toString(),
+          title: eventTitle,
+          start: startTime,
+          end: endTime,
+          allDay: isAllDay,
+          backgroundColor: event.backgroundColor || event.color,
+          borderColor: event.borderColor || event.color,
+          textColor: event.textColor || '#000',
+          display: 'auto',
+          extendedProps: {
+            labId: event.labId,
+            laboratoryName: event.laboratoryName,
+            status: event.status,
+            type: event.type,
+            purpose: event.purpose,
+            reservationId: event.id,
+            allDay: isAllDay
+          }
         }
-      }))
+      })
     } else {
       calendarEvents.value = []
     }
@@ -739,11 +764,12 @@ const loadCalendarEvents = async (start, end) => {
 
 // 日历日期范围变化
 const handleCalendarDatesSet = (info) => {
-  // FullCalendar 的 end 是排他的（exclusive），需要减去一天
-  const start = info.start.toISOString().split('T')[0]
+  const start = formatCalendarDate(info.start)
   const endDate = new Date(info.end)
   endDate.setDate(endDate.getDate() - 1) // 减去一天，因为 end 是排他的
-  const end = endDate.toISOString().split('T')[0]
+  const end = formatCalendarDate(endDate)
+  currentCalendarStart.value = start
+  currentCalendarEnd.value = end
   loadCalendarEvents(start, end)
 }
 
@@ -751,18 +777,18 @@ const handleCalendarDatesSet = (info) => {
 const handleCalendarEventClick = (info) => {
   const event = info.event
   const extendedProps = event.extendedProps
-  
+
   // 查找对应的预约数据
   const reservation = {
     id: extendedProps.reservationId,
     laboratoryName: extendedProps.laboratoryName,
-    startTime: event.start.toISOString(),
+    startTime: event.start?.toISOString() || '',
     endTime: event.end ? event.end.toISOString() : '',
     status: extendedProps.status,
     type: extendedProps.type,
     purpose: extendedProps.purpose
   }
-  
+
   handleView(reservation)
 }
 
