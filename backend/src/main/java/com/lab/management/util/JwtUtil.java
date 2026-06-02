@@ -94,15 +94,15 @@ public class JwtUtil {
             parseToken(token);
             return true;
         } catch (ExpiredJwtException e) {
-            log.error("Token已过期", e);
+            log.debug("Token校验失败: 已过期");
         } catch (UnsupportedJwtException e) {
-            log.error("不支持的Token", e);
+            log.debug("Token校验失败: 不支持的Token");
         } catch (MalformedJwtException e) {
-            log.error("Token格式错误", e);
+            log.debug("Token校验失败: 格式错误");
         } catch (SecurityException e) {
-            log.error("Token签名验证失败", e);
+            log.debug("Token校验失败: 签名验证失败");
         } catch (IllegalArgumentException e) {
-            log.error("Token参数非法", e);
+            log.debug("Token校验失败: 参数非法");
         }
         return false;
     }

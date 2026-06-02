@@ -2,15 +2,36 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 
-dotenv.config()
+dotenv.config({ override: true })
 
 const app = express()
 const port = process.env.PORT || 3001
-const siliconflowApiKey = process.env.SILICONFLOW_API_KEY || ''
-const siliconflowBaseUrl = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1'
-const deepseekModel = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3'
+const envSource = {
+  PORT: process.env.PORT ? 'env' : 'default',
+  BACKEND_BASE_URL: process.env.BACKEND_BASE_URL ? 'env' : 'default',
+  SILICONFLOW_API_KEY: process.env.SILICONFLOW_API_KEY ? 'env' : 'missing',
+  SILICONFLOW_BASE_URL: process.env.SILICONFLOW_BASE_URL ? 'env' : 'default',
+  DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL ? 'env' : 'default'
+}
+const rawSiliconflowApiKey = process.env.SILICONFLOW_API_KEY || ''
+const rawDeepseekModel = process.env.DEEPSEEK_MODEL || ''
+const siliconflowApiKey = String(rawSiliconflowApiKey).trim().replace(/^Bearer\s+/i, '')
+const siliconflowBaseUrl = String(process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1').trim()
+const deepseekModel = String(rawDeepseekModel || 'deepseek-ai/DeepSeek-V4-Flash').trim()
+const siliconflowApiKeyPreview = siliconflowApiKey
+  ? `${siliconflowApiKey.slice(0, 6)}...${siliconflowApiKey.slice(-4)}`
+  : 'empty'
+const rawSiliconflowApiKeyLength = rawSiliconflowApiKey.length
+const rawDeepseekModelTrimmed = String(rawDeepseekModel).trim()
+const rawDeepseekModelHasWhitespace = rawDeepseekModel !== rawDeepseekModelTrimmed
+const rawSiliconflowApiKeyHasWhitespace = rawSiliconflowApiKey !== String(rawSiliconflowApiKey).trim()
 
-app.use(cors())
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}))
 app.use(express.json())
 
 const sessions = new Map()
@@ -26,12 +47,22 @@ const parseTimeText = (message = '') => {
   const text = String(message)
   const now = new Date()
   const dayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 }
-  const dayMatch = text.match(/周([一二三四五六日天])/)
+  const dayMatch = text.match(/(下周|本周|这周|周)([一二三四五六日天])/)
   const timeMatch = text.match(/(上午|下午|晚上)?\s*(\d{1,2})\s*点?(?:到|至|-|—|~)?\s*(\d{1,2})?\s*点?/) 
   if (!dayMatch || !timeMatch) return null
-  const targetDow = dayMap[dayMatch[1]]
+
+  const weekPrefix = dayMatch[1]
+  const targetDow = dayMap[dayMatch[2]]
   const currentDow = now.getDay() === 0 ? 7 : now.getDay()
-  const delta = (targetDow - currentDow + 7) % 7 || 7
+  let delta = (targetDow - currentDow + 7) % 7
+  if (weekPrefix === '下周') {
+    delta = delta + 7 || 7
+  } else if (weekPrefix === '本周' || weekPrefix === '这周') {
+    if (delta === 0) delta = 7
+  } else {
+    delta = delta || 7
+  }
+
   const date = new Date(now)
   date.setDate(now.getDate() + delta)
   const period = timeMatch[1]
@@ -71,31 +102,100 @@ const mockReservations = [
   }
 ]
 
-const findAvailableResources = async (payload = {}) => {
+const buildRecommendReason = (item, payload = {}) => {
+  const reasons = []
+  const participantCount = Number(payload.participantCount || 0)
+  const equipment = String(payload.equipment || '').trim()
+  if (item.status === 'IDLE') reasons.push('当前状态可预约')
+  if (participantCount) {
+    if (item.capacity >= participantCount) {
+      reasons.push(`容量 ${item.capacity} 人，满足 ${participantCount} 人需求`)
+    } else {
+      reasons.push(`容量 ${item.capacity} 人，接近 ${participantCount} 人需求`)
+    }
+  } else {
+    reasons.push(`容量 ${item.capacity} 人`)
+  }
+  if (equipment) {
+    const text = `${item.name || ''} ${item.type || ''} ${item.description || ''} ${item.location || ''}`.toLowerCase()
+    if (text.includes(equipment.toLowerCase())) {
+      reasons.push(`匹配设备需求「${equipment}」`)
+    }
+  }
+  if (item.location) reasons.push(`地点 ${item.location}`)
+  return reasons.slice(0, 3).join('；')
+}
+
+const findAvailableResources = async (payload = {}, authHeaders = {}) => {
   const { participantCount, equipment } = payload
+  const authHeader = pickAuthHeader(authHeaders).Authorization || ''
   try {
-    const { data } = await backendFetchJson('/laboratory/available?current=1&size=50')
-    const records = data?.data?.records || data?.data || []
-    const filtered = records.filter((item) => {
-      const capacityOk = !participantCount || Number(item.capacity || 0) >= Number(participantCount)
-      const text = `${item.name || ''} ${item.type || ''} ${item.description || ''}`
-      const equipmentOk = !equipment || text.includes(String(equipment))
-      return capacityOk && equipmentOk
+    const headerObject = pickAuthHeader(authHeaders)
+    const resourceStartedAt = Date.now()
+    const { response, data } = await backendFetchJson('/api/laboratory/page?current=1&size=50', {
+      headers: headerObject
     })
-    return filtered.map((item) => ({
-      id: item.id,
-      name: item.name,
-      capacity: item.capacity,
-      status: item.status,
-      type: item.type,
-      imageUrl: item.imageUrl
-    }))
+    console.log(`[ai-server] resource_query backend status=${response.status} ok=${response.ok}`)
+    console.log(`[ai-server] resource_query backend raw=${JSON.stringify(data)}`)
+    console.log(`[ai-server] resource_query backend data=${JSON.stringify(data?.data)}`)
+    console.log(`[ai-server] resource_query backend elapsed=${Date.now() - resourceStartedAt}ms`)
+    const records = data?.data?.records || data?.data?.data?.records || data?.records || []
+    console.log(`[ai-server] resource_query auth=${authHeader ? 'present' : 'empty'} authPreview=${authHeader ? `${authHeader.slice(0, 12)}...${authHeader.slice(-6)}` : 'empty'} records=${Array.isArray(records) ? records.length : 'n/a'}`)
+
+    const normalized = records
+      .filter((item) => String(item.status || '').toUpperCase() === 'IDLE')
+      .map((item) => {
+        const capacity = Number(item.capacity || 0)
+        const diff = participantCount ? Math.abs(capacity - Number(participantCount)) : 0
+        const text = `${item.name || ''} ${item.type || ''} ${item.description || ''} ${item.location || ''}`.toLowerCase()
+        const eq = String(equipment || '').toLowerCase().trim()
+        const equipmentMatch = !equipment || text.includes(eq)
+        return {
+          id: item.id,
+          name: item.name,
+          capacity,
+          status: item.status,
+          type: item.type,
+          location: item.location,
+          description: item.description,
+          equipmentCount: item.equipmentCount,
+          reason: buildRecommendReason({ ...item, capacity, status: item.status }, payload),
+          equipmentMatch,
+          score: (capacity >= Number(participantCount || 0) ? 100 : 0) + (equipmentMatch ? 50 : 0) - diff
+        }
+      })
+      .sort((a, b) => b.score - a.score)
+
+    const matched = normalized.filter((item) => {
+      const enoughCapacity = !participantCount || item.capacity >= Number(participantCount)
+      return enoughCapacity && item.equipmentMatch
+    })
+
+    const result = matched.length ? matched : normalized.slice(0, 5)
+    return result.map(({ equipmentMatch, score, ...item }) => item)
   } catch (error) {
-    return mockResources.filter((item) => {
-      const capacityOk = !participantCount || item.capacity >= Number(participantCount)
-      const equipmentOk = !equipment || item.equipment.some(e => String(equipment).includes(e) || e.includes(String(equipment)))
-      return item.status === '可预约' && capacityOk && equipmentOk
+    const normalized = mockResources
+      .filter((item) => item.status === '可预约')
+      .map((item) => {
+        const capacity = Number(item.capacity || 0)
+        const diff = participantCount ? Math.abs(capacity - Number(participantCount)) : 0
+        const equipmentMatch = !equipment || item.equipment.some(e => String(equipment).includes(e) || e.includes(String(equipment)))
+        return {
+          ...item,
+          reason: buildRecommendReason(item, payload),
+          equipmentMatch,
+          score: (capacity >= Number(participantCount || 0) ? 100 : 0) + (equipmentMatch ? 50 : 0) - diff
+        }
+      })
+      .sort((a, b) => b.score - a.score)
+
+    const matched = normalized.filter((item) => {
+      const enoughCapacity = !participantCount || item.capacity >= Number(participantCount)
+      return enoughCapacity && item.equipmentMatch
     })
+
+    const result = matched.length ? matched : normalized.slice(0, 5)
+    return result.map(({ equipmentMatch, score, ...item }) => item)
   }
 }
 
@@ -110,26 +210,70 @@ const backendFetchJson = async (path, options = {}) => {
   return { response, data }
 }
 
+const debugAuth = (label, authHeader) => {
+  const preview = authHeader ? 'present' : 'empty'
+  console.log(`[ai-server] ${label} auth=${preview}`)
+}
+
+const withAuthHeaders = (incomingHeaders = {}) => {
+  const authorization = incomingHeaders.authorization || incomingHeaders.Authorization || ''
+  return authorization ? { Authorization: authorization } : {}
+}
+
+const pickAuthHeader = (headers = {}) => {
+  const authorization = headers.Authorization || headers.authorization || ''
+  return authorization ? { Authorization: authorization } : {}
+}
+
 const siliconflowChat = async (messages = []) => {
-  if (!siliconflowApiKey) return null
-  const response = await fetch(`${siliconflowBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${siliconflowApiKey}`
-    },
-    body: JSON.stringify({
-      model: deepseekModel,
-      messages,
-      temperature: 0.4,
-      response_format: { type: 'json_object' }
-    })
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(text || `SiliconFlow request failed: ${response.status}`)
+  if (!siliconflowApiKey) {
+    console.log('[ai-server] siliconflow skipped: missing API key')
+    return null
   }
-  return response.json()
+
+  const baseUrl = siliconflowBaseUrl.replace(/\/$/, '')
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${siliconflowApiKey}`,
+    'X-API-Key': siliconflowApiKey
+  }
+  const headersPreview = {
+    'Content-Type': requestHeaders['Content-Type'],
+    Authorization: requestHeaders.Authorization ? `${requestHeaders.Authorization.slice(0, 12)}...${requestHeaders.Authorization.slice(-4)}` : '',
+    'X-API-Key': siliconflowApiKeyPreview
+  }
+  const requestBody = {
+    model: deepseekModel,
+    messages,
+    temperature: 0.4,
+    stream: false
+  }
+  console.log(`[ai-server] siliconflow request start baseUrl=${baseUrl} model=${deepseekModel} messages=${messages.length}`)
+  console.log(`[ai-server] siliconflow request key preview=${siliconflowApiKeyPreview} length=${siliconflowApiKey.length}`)
+  console.log(`[ai-server] siliconflow request headers preview=${JSON.stringify(headersPreview)}`)
+  console.log(`[ai-server] siliconflow request body preview=${JSON.stringify(requestBody).slice(0, 800)}`)
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: requestHeaders,
+    body: JSON.stringify(requestBody)
+  })
+
+  const rawText = await response.text().catch(() => '')
+  console.log(`[ai-server] siliconflow response status=${response.status} ok=${response.ok}`)
+  console.log(`[ai-server] siliconflow response raw=${rawText}`)
+  console.log(`[ai-server] siliconflow response preview=${rawText.slice(0, 500)}`)
+
+  if (!response.ok) {
+    throw new Error(rawText || `SiliconFlow request failed: ${response.status}`)
+  }
+
+  try {
+    return JSON.parse(rawText)
+  } catch (error) {
+    console.log('[ai-server] siliconflow response parse failed')
+    throw error
+  }
 }
 
 const createDraft = (message = '') => ({
@@ -179,6 +323,50 @@ const detectIntent = (message = '') => {
   return 'general_chat'
 }
 
+const parseDateTime = (value = '') => {
+  const normalized = String(value).trim().replace(' ', 'T')
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const formatDateTime = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const normalizeFutureDraftTime = (draft = {}) => {
+  const start = parseDateTime(draft.startTime)
+  const end = parseDateTime(draft.endTime)
+  if (!start || !end) return draft
+  if (start.getTime() >= Date.now()) return draft
+
+  const durationMs = Math.max(end.getTime() - start.getTime(), 60 * 60 * 1000)
+  const now = new Date()
+  const futureStart = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  futureStart.setHours(start.getHours(), start.getMinutes(), 0, 0)
+  if (futureStart.getTime() <= Date.now()) {
+    futureStart.setDate(futureStart.getDate() + 1)
+  }
+  const futureEnd = new Date(futureStart.getTime() + durationMs)
+  return {
+    ...draft,
+    startTime: formatDateTime(futureStart),
+    endTime: formatDateTime(futureEnd)
+  }
+}
+
+const getNextAvailableTimeSuggestion = () => {
+  const now = new Date()
+  const suggestionStart = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  suggestionStart.setHours(9, 0, 0, 0)
+  if (suggestionStart.getTime() <= Date.now()) {
+    suggestionStart.setDate(suggestionStart.getDate() + 1)
+  }
+  const suggestionEnd = new Date(suggestionStart.getTime() + 2 * 60 * 60 * 1000)
+  return `${formatDateTime(suggestionStart)} 到 ${formatDateTime(suggestionEnd)}`
+}
+
 const extractFields = (message = '') => {
   const text = String(message)
   const draft = { ...createDraft(message) }
@@ -204,27 +392,26 @@ const extractFields = (message = '') => {
 
   if (!/预约|预定/.test(text)) missingFields.push('intent')
 
-  return { draft, missingFields: [...new Set(missingFields)] }
+  return { draft: normalizeFutureDraftTime(draft), missingFields: [...new Set(missingFields)] }
 }
 
-const detectBackendConflict = async (draft) => {
+const detectBackendConflict = async (draft, authHeaders = {}) => {
   if (!draft?.laboratoryName || !draft?.startTime || !draft?.endTime) return null
   try {
-    const base = process.env.BACKEND_BASE_URL || 'http://localhost:8080'
-    const url = new URL('/reservation/conflict', base)
-    url.searchParams.set('labName', draft.laboratoryName)
-    url.searchParams.set('startTime', draft.startTime)
-    url.searchParams.set('endTime', draft.endTime)
-    const response = await fetch(url)
-    if (!response.ok) return null
-    const result = await response.json()
-    return result?.data || result || null
+    const { data } = await backendFetchJson('/api/reservation/calendar?start=' + encodeURIComponent(draft.startTime) + '&end=' + encodeURIComponent(draft.endTime), {
+      headers: pickAuthHeader(authHeaders)
+    })
+    const events = data?.data || data?.data?.records || []
+    const conflict = Array.isArray(events) && events.length > 0
+    return conflict
+      ? { hasConflict: true, message: `该时间段已有 ${events.length} 条预约/占用记录，请更换时间或实验室。` }
+      : { hasConflict: false }
   } catch (error) {
     return null
   }
 }
 
-const buildSystemPrompt = () => `你是高校实验室预约系统的 AI 小助手。你的任务是帮助用户查询预约规则、推荐可预约实验室、生成预约草稿，并在信息不完整时主动追问。
+const buildSystemPrompt = () => `你是高校实验室预约系统的 AI 小助手。你要帮助用户查询预约规则、推荐可预约实验室、生成预约草稿，并在信息不完整时主动追问。
 
 你必须输出严格 JSON，字段如下：
 {
@@ -249,13 +436,15 @@ const buildSystemPrompt = () => `你是高校实验室预约系统的 AI 小助�
 }
 
 要求：
-- 当用户表达预约意图时，要尽量提取实验室、时间、人数、设备需求。
+- 回复必须自然，不要只输出实验室名字。
+- 当返回资源查询时，reply 要说明为什么推荐这些实验室，尽量提到容量、设备、状态等原因。
+- 当用户表达预约意图时，要尽量提取实验室、时间、人数、设备需求，并主动给出下一步建议。
 - 信息不完整时，needsClarification 必须为 true，并给出 clarification 和 suggestions。
 - 当用户询问可预约资源时，intent 使用 resource_query，并尽量给出 resourceQuery。
-- 回复要简洁自然，像高校实验室预约助手。
 - 不要输出 JSON 之外的任何内容。`
 
-const buildReply = async ({ message = '', sessionId = 'default' } = {}) => {
+const buildReply = async ({ message = '', sessionId = 'default', authHeader = '' } = {}) => {
+  const startedAt = Date.now()
   const session = sessions.get(sessionId) || []
   const historyContext = session.slice(-8).map(item => ({
     role: item.role === 'assistant' ? 'assistant' : 'user',
@@ -267,43 +456,101 @@ const buildReply = async ({ message = '', sessionId = 'default' } = {}) => {
 
   if (siliconflowApiKey) {
     try {
+      console.log('[ai-server] entering model branch')
       const completion = await siliconflowChat([
         { role: 'system', content: buildSystemPrompt() },
         ...historyContext,
         { role: 'user', content: userInput }
       ])
       const raw = completion?.choices?.[0]?.message?.content || '{}'
-      parsed = JSON.parse(raw)
+      const rawText = String(raw)
+      const normalized = rawText
+        .replace(/```json\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim()
+      console.log(`[ai-server] model raw reply=${rawText}`)
+      console.log(`[ai-server] model raw reply preview=${rawText.slice(0, 500)}`)
+      console.log(`[ai-server] model normalized reply=${normalized}`)
+      parsed = typeof raw === 'string' ? JSON.parse(normalized) : raw
+      console.log(`[ai-server] model parsed intent=${parsed?.intent || 'none'}`)
+      console.log(`[ai-server] model branch elapsed=${Date.now() - startedAt}ms`)
     } catch (error) {
+      console.log(`[ai-server] model branch failed: ${error?.message || error}`)
       parsed = null
     }
+  } else {
+    console.log('[ai-server] entering fallback branch: missing api key')
   }
 
   if (parsed && typeof parsed === 'object') {
-    const resources = parsed.intent === 'resource_query'
+    const intent = parsed.intent || 'general_chat'
+    const resources = intent === 'resource_query'
       ? await findAvailableResources({
           participantCount: parsed.resourceQuery?.participantCount,
           equipment: parsed.resourceQuery?.equipment
-        })
+        }, { Authorization: authHeader })
       : []
 
-    const conflict = parsed.intent === 'reservation_request' && parsed.draft
-      ? await detectBackendConflict(parsed.draft)
+    const conflict = intent === 'reservation_request' && parsed.draft
+      ? await detectBackendConflict(parsed.draft, { Authorization: authHeader })
       : null
+
+    const resourceNames = resources.slice(0, 4).map(item => item.name).join('、')
+    const resourceSummary = resources.length
+      ? `我帮你筛选到 ${resources.length} 个比较合适的实验室：${resourceNames}。`
+      : ''
+    const resourceReasons = resources.slice(0, 3).map(item => item.reason).filter(Boolean)
+    const resourceIntro = resourceReasons.length
+      ? `我帮你筛选到 ${resources.length} 个比较合适的实验室：${resourceNames}。推荐理由：${resourceReasons.join('；')}。`
+      : resourceSummary
+
+    const isReservationIntent = intent === 'reservation_request'
+    const isGeneralResourceQuestion = intent === 'resource_query'
+    const missingDraftInfo = isReservationIntent && (!parsed.draft?.laboratoryName || !parsed.draft?.startTime || !parsed.draft?.endTime)
+    const modelReply = String(parsed.reply || '').trim()
+    const draftFields = parsed.draft || {}
+    const draftConfidence = [draftFields.laboratoryName, draftFields.startTime, draftFields.endTime, draftFields.participantCount, draftFields.equipment].filter(Boolean).length
+    const reservationReason = draftFields.laboratoryName
+      ? `我先帮你看了${draftFields.laboratoryName}附近的可用情况。`
+      : '我先帮你筛了几间适合你需求的实验室。'
+    const reservationFollowUp = draftConfidence >= 3
+      ? '如果你确认具体时间，我可以继续帮你完善草稿并提交。'
+      : '如果你确认具体时间和实验室，我可以继续帮你生成草稿。'
 
     const assistantMsg = {
       role: 'assistant',
-      content: parsed.reply || '我已经收到你的消息。',
-      draft: parsed.intent === 'reservation_request' && !parsed.needsClarification && !conflict?.hasConflict ? parsed.draft : null,
+      content: modelReply || resourceIntro || reservationReason || '我已经收到你的消息。',
+      draft: isReservationIntent ? {
+        ...draftFields,
+        ...(draftFields.participantCount ? { participantCount: Number(draftFields.participantCount) } : {}),
+        ...(draftFields.laboratoryName ? { laboratoryName: draftFields.laboratoryName } : {}),
+        ...(draftFields.startTime ? { startTime: draftFields.startTime } : {}),
+        ...(draftFields.endTime ? { endTime: draftFields.endTime } : {})
+      } : null,
       resources: resources.length ? resources : [],
-      intent: parsed.intent || 'general_chat',
-      needsClarification: Boolean(parsed.needsClarification || conflict?.hasConflict),
+      intent,
+      needsClarification: Boolean(parsed.needsClarification || conflict?.hasConflict || missingDraftInfo),
       clarification: conflict?.message || parsed.clarification || '',
-      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : []
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : [],
+      resourceReasons
     }
 
-    if (assistantMsg.needsClarification && !assistantMsg.clarification) {
-      assistantMsg.clarification = '我还需要你补充一些信息，比如具体实验室名称和预约时间。'
+    if (isGeneralResourceQuestion) {
+      if (resources.length) {
+        const reasonText = resourceReasons.length ? `推荐理由：${resourceReasons.join('；')}。` : ''
+        assistantMsg.content = modelReply || `可以，当前比较合适的有：${resourceNames}。${reasonText}如果你告诉我人数或是否需要投影仪，我可以继续缩小范围。`
+      } else {
+        assistantMsg.content = modelReply || '我暂时没有筛到合适的实验室，你可以告诉我人数、时间或设备需求，我再继续帮你找。'
+      }
+    }
+
+    if (isReservationIntent) {
+      if (assistantMsg.needsClarification && !assistantMsg.clarification) {
+        assistantMsg.clarification = '我还需要你补充一些信息，比如具体实验室名称和预约时间。'
+      }
+      if (!modelReply) {
+        assistantMsg.content = `${reservationReason}${reservationFollowUp}`
+      }
     }
 
     sessions.set(sessionId, [...session, { role: 'user', content: userInput }, assistantMsg])
@@ -319,13 +566,13 @@ const buildReply = async ({ message = '', sessionId = 'default' } = {}) => {
   let clarification = ''
 
   if (intent === 'reservation_request') {
-    resources = await findAvailableResources(draft)
+    resources = await findAvailableResources(draft, { Authorization: authHeader })
     if (missingFields.length) {
       needsClarification = true
       clarification = '我还需要你补充一些信息，比如具体实验室名称和预约时间。'
       content = clarification
     } else {
-      const conflict = await detectBackendConflict(draft)
+      const conflict = await detectBackendConflict(draft, { Authorization: authHeader })
       if (conflict?.hasConflict) {
         needsClarification = true
         clarification = conflict.message || '当前时间段存在冲突，请尝试更换时间或实验室。'
@@ -337,7 +584,10 @@ const buildReply = async ({ message = '', sessionId = 'default' } = {}) => {
   }
 
   if (intent === 'resource_query') {
-    resources = await findAvailableResources(draft)
+    resources = await findAvailableResources({
+      participantCount: draft.participantCount,
+      equipment: draft.equipment
+    }, { Authorization: authHeader })
     content = resources.length
       ? `当前可预约的资源有：${resources.map(item => item.name).join('、')}。`
       : '当前没有找到满足条件的可预约资源。'
@@ -371,6 +621,14 @@ const buildReply = async ({ message = '', sessionId = 'default' } = {}) => {
     ] : []
   }
 
+  if (intent === 'reservation_request' && missingFields.includes('time')) {
+    const timeSuggestion = getNextAvailableTimeSuggestion()
+    assistantMsg.suggestions = [...assistantMsg.suggestions, `例如：${timeSuggestion}`].slice(0, 3)
+    if (!assistantMsg.clarification) {
+      assistantMsg.clarification = `我暂时没解析出具体时间，你可以试试：${timeSuggestion}`
+    }
+  }
+
   sessions.set(sessionId, [...session, { role: 'user', content: userInput }, assistantMsg])
 
   return assistantMsg
@@ -394,8 +652,10 @@ app.get('/api/ai/reservations/mock', (_req, res) => {
 })
 
 app.post('/api/ai/chat', async (req, res) => {
+  const requestStartedAt = Date.now()
   const { sessionId = 'default', message = '' } = req.body || {}
-  const result = await buildReply({ sessionId, message })
+  const result = await buildReply({ sessionId, message, authHeader: req.headers.authorization || '' })
+  console.log(`[ai-server] chat total elapsed=${Date.now() - requestStartedAt}ms`)
   res.json({
     code: 200,
     data: {
@@ -417,7 +677,7 @@ app.get('/api/ai/sessions/:sessionId', (req, res) => {
 
 app.post('/api/ai/reservation/draft', async (req, res) => {
   const { message = '', sessionId = 'default' } = req.body || {}
-  const result = await buildReply({ message, sessionId })
+  const result = await buildReply({ message, sessionId, authHeader: req.headers.authorization || '' })
   res.json({
     code: 200,
     data: {
@@ -483,9 +743,9 @@ app.post('/api/ai/resources/available', (req, res) => {
   res.json({ code: 200, data: findAvailableResources(req.body || {}) })
 })
 
-app.post('/api/ai/intent/parse', (req, res) => {
+app.post('/api/ai/intent/parse', async (req, res) => {
   const { message = '', sessionId = 'default' } = req.body || {}
-  const result = buildReply({ message, sessionId })
+  const result = await buildReply({ message, sessionId, authHeader: req.headers.authorization || '' })
   res.json({
     code: 200,
     data: {
@@ -522,4 +782,8 @@ app.post('/api/ai/conversation/reset', (req, res) => {
 
 app.listen(port, () => {
   console.log(`AI service running at http://localhost:${port}`)
+  console.log(`[ai-server] boot config model=${deepseekModel} baseUrl=${siliconflowBaseUrl} keyPreview=${siliconflowApiKeyPreview} keyLength=${siliconflowApiKey.length}`)
+  console.log(`[ai-server] env source PORT=${envSource.PORT} BACKEND_BASE_URL=${envSource.BACKEND_BASE_URL} SILICONFLOW_API_KEY=${envSource.SILICONFLOW_API_KEY} SILICONFLOW_BASE_URL=${envSource.SILICONFLOW_BASE_URL} DEEPSEEK_MODEL=${envSource.DEEPSEEK_MODEL}`)
+  console.log(`[ai-server] raw env model=${JSON.stringify(rawDeepseekModel)} trimmed=${JSON.stringify(rawDeepseekModelTrimmed)} hasWhitespace=${rawDeepseekModelHasWhitespace}`)
+  console.log(`[ai-server] raw env apiKeyLength=${rawSiliconflowApiKeyLength} hasWhitespace=${rawSiliconflowApiKeyHasWhitespace} keyPreview=${siliconflowApiKeyPreview}`)
 })

@@ -1,8 +1,18 @@
 import axios from 'axios'
+import { useUserStore } from '../stores/user'
 
 const aiRequest = axios.create({
   baseURL: 'http://localhost:3001/api/ai',
-  timeout: 15000
+  timeout: 45000,
+  withCredentials: true
+})
+
+aiRequest.interceptors.request.use((config) => {
+  const userStore = useUserStore()
+  if (userStore.token) {
+    config.headers.Authorization = `Bearer ${userStore.token}`
+  }
+  return config
 })
 
 export const sendAiMessage = (payload) => aiRequest.post('/chat', payload)

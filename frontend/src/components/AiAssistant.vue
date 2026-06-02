@@ -79,10 +79,31 @@
               <div v-if="msg.resources && msg.resources.length" class="resource-card">
                 <div class="section-title">可预约资源</div>
                 <div class="resource-item" v-for="resource in msg.resources" :key="resource.id">
-                  <div class="resource-name">{{ resource.name }}</div>
+                  <div class="resource-top-row">
+                    <div class="resource-name">{{ resource.name }}</div>
+                    <el-tag size="small" effect="plain" type="success">{{ getRecommendLevel(resource) }}</el-tag>
+                  </div>
                   <div class="resource-meta">
                     容量 {{ resource.capacity }} 人 · {{ resource.status }}
                   </div>
+                  <div v-if="resource.reason" class="resource-reason">
+                    推荐理由：{{ resource.reason }}
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="msg.suggestions && msg.suggestions.length" class="suggestion-card message-suggestion-card">
+                <div class="section-title">继续追问 / 快捷建议</div>
+                <div class="suggestion-list">
+                  <el-tag
+                    v-for="item in msg.suggestions"
+                    :key="item"
+                    class="suggestion-item"
+                    effect="plain"
+                    @click="applyQuickPrompt(item)"
+                  >
+                    {{ item }}
+                  </el-tag>
                 </div>
               </div>
 
@@ -93,12 +114,29 @@
 
               <div v-if="msg.draft" class="draft-card">
                 <div class="section-title">预约草稿</div>
-                <div class="draft-item" v-for="(value, key) in msg.draft" :key="key">
+                <div class="draft-item" v-for="(value, key) in displayDraftFields(msg.draft)" :key="key">
                   <span class="draft-key">{{ labelMap[key] || key }}</span>
                   <span class="draft-value">{{ value }}</span>
                 </div>
+                <div v-if="!isDraftComplete(msg.draft)" class="draft-missing">
+                  <div class="section-title">还缺少的信息</div>
+                  <div class="missing-tag-list">
+                    <el-tag
+                      v-for="field in getMissingDraftFields(msg.draft)"
+                      :key="field"
+                      type="warning"
+                      effect="plain"
+                      class="missing-tag"
+                    >
+                      {{ field }}
+                    </el-tag>
+                  </div>
+                  <div class="clarification-text missing-tip">
+                    请先补全后再提交，我也可以继续帮你追问这些信息。
+                  </div>
+                </div>
                 <div class="draft-actions">
-                  <el-button size="small" type="primary" @click="confirmDraft(msg.draft)">确认提交</el-button>
+                  <el-button v-if="isDraftComplete(msg.draft)" size="small" type="primary" @click="confirmDraft(msg.draft)">确认提交</el-button>
                   <el-button size="small" @click="fillDraftToInput(msg.draft)">编辑后再确认</el-button>
                 </div>
               </div>
@@ -208,6 +246,13 @@ const intentLabelMap = {
 
 const currentIntentLabel = computed(() => intentLabelMap[currentIntent.value] || '')
 const historyPreview = computed(() => messages.value.slice(-8))
+const isDraftComplete = (draft = {}) => Boolean(draft?.laboratoryName && draft?.startTime && draft?.endTime)
+const getMissingDraftFields = (draft = {}) => {
+  const missing = []
+  if (!draft?.laboratoryName) missing.push('实验室名称')
+  if (!draft?.startTime || !draft?.endTime) missing.push('预约时间')
+  return missing
+}
 
 const labelMap = {
   laboratoryName: '实验室',
@@ -216,6 +261,41 @@ const labelMap = {
   purpose: '用途',
   participantCount: '人数',
   equipment: '设备需求'
+}
+
+const getRecommendLevel = (resource) => {
+  if (!resource) return '推荐'
+  if (String(resource.status || '').toUpperCase() !== 'IDLE') return '候选'
+  const reason = String(resource.reason || '')
+  if (reason.includes('匹配设备') || reason.includes('满足')) return '优先推荐'
+  if (reason.includes('接近')) return '可选'
+  return '推荐'
+}
+
+const displayDraftFields = (draft = {}) => {
+  const keys = ['laboratoryName', 'startTime', 'endTime', 'participantCount', 'equipment', 'purpose']
+  return keys
+    .filter(key => draft[key] !== undefined && draft[key] !== null && draft[key] !== '')
+    .reduce((acc, key) => {
+      acc[key] = draft[key]
+      return acc
+    }, {})
+}
+
+const isPastDraftTime = (draft = {}) => {
+  const start = draft?.startTime ? new Date(String(draft.startTime).replace(' ', 'T')) : null
+  if (!start || Number.isNaN(start.getTime())) return false
+  return start.getTime() < Date.now()
+}
+
+const formatConfirmError = (error) => {
+  const rawMessage = error?.response?.data?.data?.message || error?.response?.data?.message || error?.message || ''
+  const text = String(rawMessage)
+  if (/已过期|过期|过去时间|时间已过/i.test(text)) return '预约时间已过期，请选择未来时间后再提交。'
+  if (/冲突|占用|已被预约|不可用/i.test(text)) return '该时间段已被占用，请更换时间或实验室。'
+  if (/信息不完整|缺少|实验室.*为空|时间.*为空|草稿.*不完整/i.test(text)) return '实验室信息不完整，请先补全实验室名称、时间等信息。'
+  if (/未认证|登录|token|权限/i.test(text)) return '当前登录已失效，请重新登录后再试。'
+  return text || '提交失败，请检查信息是否完整或是否存在时间冲突。'
 }
 
 const openAssistant = () => {
@@ -300,10 +380,12 @@ const sendMessage = async () => {
     pushMessage('ai', reply, {
       ...(payload.draft ? { draft: payload.draft } : {}),
       ...(payload.resources?.length ? { resources: payload.resources } : {}),
-      ...(payload.needsClarification ? { clarification: payload.clarification } : {})
+      ...(payload.needsClarification ? { clarification: payload.clarification } : {}),
+      ...(payload.suggestions?.length ? { suggestions: payload.suggestions } : {})
     })
   } catch (error) {
-    pushMessage('ai', '抱歉，当前无法连接 AI 服务，请稍后再试。')
+    const errorMessage = error?.response?.data?.message || error?.response?.data?.data?.message || error?.message || '未知错误'
+    pushMessage('ai', `抱歉，请求 AI 服务失败：${errorMessage}`)
   } finally {
     typing.value = false
     loading.value = false
@@ -312,6 +394,17 @@ const sendMessage = async () => {
 }
 
 const confirmDraft = async (draft) => {
+  if (isPastDraftTime(draft)) {
+    pushMessage('ai', '这条草稿的开始时间已经是过去时间了，请先修改为未来时间后再提交。', {
+      reservationResult: {
+        success: false,
+        message: '草稿时间已过期，请先修改为未来时间。',
+        reservation: null
+      }
+    })
+    return
+  }
+
   try {
     await ElMessageBox.confirm(
       '确认提交这条预约草稿吗？提交前系统仍会进行业务校验。',
@@ -325,24 +418,36 @@ const confirmDraft = async (draft) => {
     })
 
     const result = data?.data || data
-    pushMessage('ai', result?.message || '预约已提交。', {
+    const successMessage = result?.success ? (result?.message || '预约已提交。') : formatConfirmError({ response: { data: { data: { message: result?.message } } } })
+    pushMessage('ai', successMessage, {
       reservationResult: {
         success: result?.success ?? true,
-        message: result?.message || '预约已提交。',
+        message: successMessage,
         reservation: result?.reservation || null
       }
     })
     suggestions.value = []
   } catch (error) {
     if (error !== 'cancel') {
-      pushMessage('ai', '提交失败，请检查信息是否完整或是否存在时间冲突。')
+      const errorMessage = formatConfirmError(error)
+      pushMessage('ai', `提交失败：${errorMessage}`, {
+        reservationResult: {
+          success: false,
+          message: errorMessage,
+          reservation: null
+        }
+      })
     }
   }
 }
 
 const fillDraftToInput = (draft) => {
-  const text = `请帮我预约${draft.laboratoryName || ''}，时间是${draft.startTime || ''}到${draft.endTime || ''}`
-  inputText.value = text
+  const parts = []
+  if (draft.laboratoryName) parts.push(`请帮我预约${draft.laboratoryName}`)
+  if (draft.participantCount) parts.push(`人数${draft.participantCount}人`)
+  if (draft.equipment) parts.push(`需要${draft.equipment}`)
+  if (draft.startTime && draft.endTime) parts.push(`时间是${draft.startTime}到${draft.endTime}`)
+  inputText.value = parts.join('，') || '请帮我完善这条预约草稿'
 }
 
 const fillFromLatestDraft = () => {
@@ -581,7 +686,8 @@ onUnmounted(() => {
 .message-item.ai .resource-card,
 .message-item.ai .draft-card,
 .message-item.ai .clarification-card,
-.message-item.ai .result-card {
+.message-item.ai .result-card,
+.message-item.ai .message-suggestion-card {
   border-top-color: var(--border-color);
 }
 
@@ -640,6 +746,13 @@ onUnmounted(() => {
   border-bottom: none;
 }
 
+.resource-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
 .resource-name {
   font-weight: 600;
 }
@@ -648,6 +761,16 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text-secondary);
   margin-top: 4px;
+}
+
+.resource-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  line-height: 1.5;
+  background: rgba(64, 158, 255, 0.06);
+  padding: 8px 10px;
+  border-radius: 10px;
 }
 
 .draft-item {
