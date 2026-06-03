@@ -175,11 +175,13 @@ const stats = reactive({
 const loadStats = async () => {
   try {
     const response = await getDashboardStats()
-    if (response && response.data) {
-      stats.totalReservations = response.data.totalReservations || 0
-      stats.totalLabs = response.data.totalLabs || 0
-      stats.totalEquipment = response.data.totalEquipment || 0
-      stats.activeUsers = response.data.activeUsers || 0
+    const data = response?.data || response || {}
+    const statsData = data?.data || data
+    if (statsData) {
+      stats.totalReservations = statsData.totalReservations || 0
+      stats.totalLabs = statsData.totalLabs || 0
+      stats.totalEquipment = statsData.totalEquipment || 0
+      stats.activeUsers = statsData.activeUsers || 0
     }
   } catch (error) {
     console.error('获取统计数据失败:', error)
@@ -333,10 +335,9 @@ const initLabUsageChart = () => {
 
 onMounted(async () => {
   await loadStats()
-  nextTick(() => {
-    initReservationChart()
-    initLabUsageChart()
-  })
+  await nextTick()
+  initReservationChart()
+  initLabUsageChart()
 })
 </script>
 

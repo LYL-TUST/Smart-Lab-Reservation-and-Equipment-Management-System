@@ -795,14 +795,17 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
+  max-height: 84px;
+  overflow: auto;
 }
 
 .assistant-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(200px, 0.45fr);
+  gap: 12px;
   min-height: 0;
   flex: 1;
+  align-items: stretch;
 }
 
 .assistant-main {
@@ -810,20 +813,22 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  gap: 12px;
+  gap: 10px;
+  height: 100%;
 }
 
 .assistant-side {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
+  max-height: 100%;
 }
 
 .side-card,
 .suggestion-card,
 .history-list {
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: 14px;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
@@ -841,7 +846,7 @@ onUnmounted(() => {
   margin: 0;
   padding-left: 18px;
   color: var(--text-secondary);
-  line-height: 1.7;
+  line-height: 1.6;
   font-size: 13px;
 }
 
@@ -872,7 +877,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 220px;
+  max-height: 160px;
   overflow: auto;
 }
 

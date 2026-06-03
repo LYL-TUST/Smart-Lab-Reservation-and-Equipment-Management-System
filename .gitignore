@@ -55,3 +55,7 @@ backend/target/
 *.tar.gz
 *.rar
 
+# ===== Project notes / drafts =====
+already_part.md
+development_project.md
+
