@@ -252,7 +252,10 @@ const resolveLaboratoryByName = async (laboratoryName, authHeaders = {}) => {
     const exactMatch = records.find(item => String(item.name || '').trim().toLowerCase() === normalizedName)
     if (exactMatch) return exactMatch
 
-    return records.find(item => String(item.name || '').toLowerCase().includes(normalizedName) || normalizedName.includes(String(item.name || '').toLowerCase())) || null
+    const exactCodeMatch = records.find(item => String(item.code || item.labCode || item.serialNumber || '').trim().toLowerCase() === normalizedName)
+    if (exactCodeMatch) return exactCodeMatch
+
+    return null
   } catch (error) {
     console.log(`[ai-server] resolve laboratory failed: ${error?.message || error}`)
     return null
@@ -405,6 +408,36 @@ const normalizeFutureDraftTime = (draft = {}) => {
     startTime: formatDateTime(futureStart),
     endTime: formatDateTime(futureEnd)
   }
+}
+
+const normalizeLabId = (value) => {
+  const num = Number(value)
+  return Number.isFinite(num) && String(num) === String(value).trim() ? num : null
+}
+
+const normalizeDraftLab = async (draft = {}, authHeaders = {}) => {
+  const directLabId = normalizeLabId(draft.labId)
+  if (directLabId) {
+    return { ...draft, labId: directLabId }
+  }
+
+  const candidates = [draft.laboratoryName, draft.labName, draft.resourceName, draft.laboratoryCode, draft.labCode]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+
+  for (const candidate of candidates) {
+    const resolvedLab = await resolveLaboratoryByName(candidate, authHeaders)
+    if (resolvedLab?.id) {
+      return {
+        ...draft,
+        labId: resolvedLab.id,
+        laboratoryName: resolvedLab.name || draft.laboratoryName || candidate,
+        laboratoryCode: resolvedLab.code || draft.laboratoryCode || draft.labCode || ''
+      }
+    }
+  }
+
+  return { ...draft, labId: null }
 }
 
 const getNextAvailableTimeSuggestion = () => {
@@ -618,21 +651,28 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
       ? '如果你确认这条草稿，我可以继续帮你提交。'
       : '如果你确认具体时间和实验室，我可以继续帮你完善草稿。'
 
+    const normalizedDraft = isReservationIntent ? await normalizeDraftLab(draftFields, { Authorization: authHeader }) : null
+    const hasValidLabId = Boolean(normalizedDraft?.labId)
     const assistantMsg = {
       role: 'assistant',
       content: modelReply || resourceIntro || reservationReason || '我已经收到你的消息。',
-      draft: isReservationIntent ? {
-        ...draftFields,
-        ...(draftFields.labId ? { labId: draftFields.labId } : {}),
-        ...(draftFields.participantCount ? { participantCount: Number(draftFields.participantCount) } : {})
+      draft: isReservationIntent && hasValidLabId ? {
+        ...normalizedDraft,
+        ...(normalizedDraft?.participantCount ? { participantCount: Number(normalizedDraft.participantCount) } : {})
       } : null,
       resources: parsedResources.length ? parsedResources : [],
       intent,
-      needsClarification: Boolean(parsed.needsClarification || conflict?.hasConflict || missingDraftInfo),
+      needsClarification: Boolean(parsed.needsClarification || conflict?.hasConflict || missingDraftInfo || (isReservationIntent && !hasValidLabId)),
       clarification: conflict?.message || parsed.clarification || '',
       suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 3) : [],
       resourceReasons,
       resourceQuery: resourceQueryInput
+    }
+
+    if (isReservationIntent && !hasValidLabId) {
+      assistantMsg.clarification = assistantMsg.clarification || '我没找到你提到的实验室，请从可预约列表中选择一个真实存在的实验室，或者告诉我更准确的名称/编号。'
+      assistantMsg.content = assistantMsg.clarification
+      assistantMsg.reply = assistantMsg.clarification
     }
 
     if (isGeneralResourceQuestion) {
@@ -646,13 +686,18 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
 
     if (isReservationIntent) {
       if (assistantMsg.needsClarification && !assistantMsg.clarification) {
-        assistantMsg.clarification = '我还需要你补充一些信息，比如具体实验室名称和预约时间。'
+        assistantMsg.clarification = hasValidLabId
+          ? '我还需要你补充一些信息，比如预约时间或用途。'
+          : '我没找到你提到的实验室，请从可预约列表中选择一个真实存在的实验室，或者告诉我更准确的名称/编号。'
       }
       if (!modelReply) {
-        assistantMsg.content = `${reservationReason}${reservationFollowUp}`
+        assistantMsg.content = hasValidLabId
+          ? `${reservationReason}${reservationFollowUp}`
+          : '我没找到你提到的实验室，请先从系统里的可预约实验室中选择一个真实存在的实验室。'
       }
-      if (draftFields.labId) {
-        assistantMsg.draft.labId = draftFields.labId
+      if (!hasValidLabId) {
+        assistantMsg.draft = null
+        assistantMsg.needsClarification = true
       }
     }
 
@@ -670,7 +715,12 @@ const buildReply = async ({ message = '', sessionId = 'default', authHeader = ''
   let clarification = ''
 
   if (intent === 'reservation_request') {
-    if (missingFields.length) {
+    const normalizedDraft = await normalizeDraftLab(draft, { Authorization: authHeader })
+    if (!normalizedDraft.labId) {
+      needsClarification = true
+      clarification = '我没找到你提到的实验室，请从可预约列表中选择一个真实存在的实验室，或者告诉我更准确的名称/编号。'
+      content = clarification
+    } else if (missingFields.length) {
       needsClarification = true
       clarification = '我还需要你补充一些信息，比如具体实验室名称、人数、用途和预约时间。'
       content = clarification

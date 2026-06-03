@@ -125,7 +125,7 @@
                     <div class="clarification-text">{{ msg.clarification }}</div>
                   </div>
 
-                  <div v-if="msg.draft" class="draft-card">
+                  <div v-if="msg.draft && msg.draft.labId" class="draft-card">
                     <div class="section-title">预约草稿</div>
                     <div class="draft-item" v-for="(value, key) in displayDraftFields(msg.draft)" :key="key">
                       <span class="draft-key">{{ labelMap[key] || key }}</span>
@@ -193,7 +193,7 @@
               </ul>
             </div>
 
-            <div v-if="lastDraft" class="side-card side-draft">
+            <div v-if="lastDraft && lastDraft.labId" class="side-card side-draft">
               <div class="section-title">当前草稿</div>
               <div v-for="(value, key) in displayDraftFields(lastDraft)" :key="key" class="side-draft-item">
                 <span class="draft-key">{{ labelMap[key] || key }}</span>
@@ -243,6 +243,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { confirmReservationDraft, resetAiConversation, sendAiMessage, getAiSession } from '../api/ai'
+import { getLaboratories } from '../api/laboratory'
 
 const props = defineProps({
   showFloatingButton: {
@@ -285,9 +286,10 @@ const intentLabelMap = {
 
 const currentIntentLabel = computed(() => intentLabelMap[currentIntent.value] || '')
 const historyPreview = computed(() => messages.value.slice(-8))
-const isDraftComplete = (draft = {}) => Boolean((draft?.labId || draft?.laboratoryName) && draft?.startTime && draft?.endTime && draft?.participantCount && draft?.purpose)
+const isDraftComplete = (draft = {}) => Boolean(draft?.labId && draft?.startTime && draft?.endTime && draft?.participantCount && draft?.purpose)
 const getMissingDraftFields = (draft = {}) => {
   const missing = []
+  if (!draft?.labId) missing.push('实验室')
   if (!draft?.labId && !draft?.laboratoryName) missing.push('实验室名称')
   if (!draft?.startTime || !draft?.endTime) missing.push('预约时间')
   if (!draft?.participantCount) missing.push('人数')
@@ -297,11 +299,60 @@ const getMissingDraftFields = (draft = {}) => {
 
 const labelMap = {
   laboratoryName: '实验室',
+  laboratoryCode: '实验室编号',
+  labId: '实验室ID',
   startTime: '开始时间',
   endTime: '结束时间',
   purpose: '用途',
   participantCount: '人数',
   equipment: '设备需求'
+}
+
+const laboratoryCache = ref([])
+
+const normalizeText = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, '')
+
+const refreshLaboratories = async () => {
+  try {
+    const { data } = await getLaboratories({ current: 1, size: 999 })
+    const records = data?.data?.records || data?.data || data || []
+    laboratoryCache.value = Array.isArray(records) ? records : []
+  } catch (error) {
+    laboratoryCache.value = []
+  }
+}
+
+const ensureLaboratoriesLoaded = async () => {
+  if (laboratoryCache.value.length) return
+  await refreshLaboratories()
+}
+
+const resolveLaboratory = (draft = {}) => {
+  const keyCandidates = [draft.labId, draft.laboratoryName, draft.laboratoryCode, draft.labCode, draft.resourceName]
+    .map(normalizeText)
+    .filter(Boolean)
+
+  if (!keyCandidates.length) return null
+
+  return laboratoryCache.value.find((lab) => {
+    const candidates = [lab.id, lab.name, lab.code, lab.labCode, lab.serialNumber, lab.number]
+      .map(normalizeText)
+      .filter(Boolean)
+    return keyCandidates.some(key => candidates.includes(key) || candidates.some(candidate => candidate.includes(key) || key.includes(candidate)))
+  }) || null
+}
+
+const buildDraftWithLabId = (draft = {}) => {
+  const resolvedLab = resolveLaboratory(draft)
+  const directLabId = Number(draft.labId)
+  const validDirectLabId = Number.isFinite(directLabId) && String(directLabId) === String(draft.labId).trim()
+  return {
+    ...draft,
+    labId: resolvedLab?.id ?? (validDirectLabId ? directLabId : null),
+    laboratoryName: resolvedLab?.name || draft.laboratoryName || '',
+    laboratoryCode: resolvedLab?.code || draft.laboratoryCode || draft.labCode || '',
+    resolvedLab
+  }
 }
 
 const getRecommendLevel = (resource) => {
@@ -314,7 +365,7 @@ const getRecommendLevel = (resource) => {
 }
 
 const displayDraftFields = (draft = {}) => {
-  const keys = ['laboratoryName', 'startTime', 'endTime', 'participantCount', 'equipment', 'purpose']
+  const keys = ['laboratoryName', 'laboratoryCode', 'labId', 'startTime', 'endTime', 'participantCount', 'equipment', 'purpose']
   return keys
     .filter(key => draft[key] !== undefined && draft[key] !== null && draft[key] !== '')
     .reduce((acc, key) => {
@@ -339,6 +390,7 @@ const toBackendDateTime = (value) => {
 
 const normalizeDraftForSubmit = (draft = {}) => ({
   ...draft,
+  labId: typeof draft.labId === 'number' ? draft.labId : Number.isFinite(Number(draft.labId)) ? Number(draft.labId) : null,
   startTime: toBackendDateTime(draft.startTime),
   endTime: toBackendDateTime(draft.endTime)
 })
@@ -408,12 +460,38 @@ const pushMessage = (role, content, extra = {}) => {
   })
 }
 
-const applyPayload = (payload = {}) => {
+const applyPayload = async (payload = {}) => {
   currentIntent.value = payload.intent || ''
   suggestions.value = payload.suggestions || []
-  if (payload.draft) {
-    lastDraft.value = payload.draft
+
+  if (payload.intent === 'reservation_request' && !payload.draft) {
+    lastDraft.value = null
+    return {
+      ...payload,
+      needsClarification: true,
+      clarification: payload.clarification || '我没有找到你提到的实验室。请从下面推荐的实验室里选择一个真实存在的实验室，或者告诉我更准确的名称/编号。'
+    }
   }
+
+  if (payload.draft) {
+    await ensureLaboratoriesLoaded()
+    const normalizedDraft = buildDraftWithLabId(payload.draft)
+    if (!normalizedDraft.labId) {
+      lastDraft.value = null
+      return {
+        ...payload,
+        draft: null,
+        needsClarification: true,
+        clarification: payload.clarification || '我没有找到你提到的实验室。请从下面推荐的实验室里选择一个真实存在的实验室，或者告诉我更准确的名称/编号。'
+      }
+    }
+    lastDraft.value = normalizedDraft
+    return {
+      ...payload,
+      draft: normalizedDraft
+    }
+  }
+
   return payload
 }
 
@@ -447,7 +525,7 @@ const sendMessage = async () => {
     let payload = {}
     if (aiResponse.status === 'fulfilled') {
       const { data } = aiResponse.value
-      payload = applyPayload(data?.data || data || {})
+      payload = await applyPayload(data?.data || data || {})
     }
 
     if (sessionResponse.status === 'fulfilled') {
@@ -460,7 +538,8 @@ const sendMessage = async () => {
       }
     }
 
-    const reply = payload.reply || '我已经收到你的消息。'
+    const clarificationPrefix = payload.needsClarification && payload.clarification ? `${payload.clarification} ` : ''
+    const reply = `${clarificationPrefix}${payload.reply || '我已经收到你的消息。'}`.trim()
     await new Promise(resolve => setTimeout(resolve, 250))
     pushMessage('ai', reply, {
       ...(payload.draft ? { draft: payload.draft } : {}),
@@ -468,6 +547,10 @@ const sendMessage = async () => {
       ...(payload.needsClarification ? { clarification: payload.clarification } : {}),
       ...(payload.suggestions?.length ? { suggestions: payload.suggestions } : {})
     })
+
+    if (payload.needsClarification && !payload.draft) {
+      currentIntent.value = 'general_chat'
+    }
   } catch (error) {
     const errorMessage = error?.response?.data?.message || error?.response?.data?.data?.message || error?.message || '未知错误'
     pushMessage('ai', `抱歉，请求 AI 服务失败：${errorMessage}`)
@@ -480,7 +563,20 @@ const sendMessage = async () => {
 }
 
 const confirmDraft = async (draft) => {
-  if (isPastDraftTime(draft)) {
+  await ensureLaboratoriesLoaded()
+  const normalizedDraft = buildDraftWithLabId(draft)
+  if (!normalizedDraft.labId) {
+    pushMessage('ai', '我没找到你提到的实验室，请从可预约实验室列表中重新选择，或者告诉我更准确的名称/编号。', {
+      clarification: '未匹配到实验室，请重新选择。',
+      reservationResult: {
+        success: false,
+        message: '未匹配到实验室，请重新选择。',
+        reservation: null
+      }
+    })
+    return
+  }
+  if (isPastDraftTime(normalizedDraft)) {
     pushMessage('ai', '这条草稿的开始时间已经是过去时间了，请先修改为未来时间后再提交。', {
       reservationResult: {
         success: false,
@@ -500,7 +596,7 @@ const confirmDraft = async (draft) => {
 
     const { data } = await confirmReservationDraft({
       sessionId: sessionId.value,
-      draft: normalizeDraftForSubmit(draft)
+      draft: normalizeDraftForSubmit(normalizedDraft)
     })
 
     const result = data?.data || data
@@ -528,13 +624,17 @@ const confirmDraft = async (draft) => {
 }
 
 const fillDraftToInput = (draft) => {
+  const normalizedDraft = buildDraftWithLabId(draft)
   const parts = []
-  if (draft.laboratoryName) parts.push(`请帮我预约${draft.laboratoryName}`)
-  if (draft.participantCount) parts.push(`人数${draft.participantCount}人`)
-  if (draft.equipment) parts.push(`需要${draft.equipment}`)
-  if (draft.specialRequirement) parts.push(`特殊要求${draft.specialRequirement}`)
-  if (draft.purpose) parts.push(`用途是${draft.purpose}`)
-  if (draft.startTime && draft.endTime) parts.push(`时间是${draft.startTime}到${draft.endTime}`)
+  if (normalizedDraft.laboratoryName) parts.push(`请帮我预约${normalizedDraft.laboratoryName}`)
+  if (normalizedDraft.participantCount) parts.push(`人数${normalizedDraft.participantCount}人`)
+  if (normalizedDraft.equipment) parts.push(`需要${normalizedDraft.equipment}`)
+  if (normalizedDraft.specialRequirement) parts.push(`特殊要求${normalizedDraft.specialRequirement}`)
+  if (normalizedDraft.purpose) parts.push(`用途是${normalizedDraft.purpose}`)
+  if (normalizedDraft.startTime && normalizedDraft.endTime) parts.push(`时间是${normalizedDraft.startTime}到${normalizedDraft.endTime}`)
+  if (!normalizedDraft.labId && normalizedDraft.laboratoryName) {
+    parts.push('请确认这个实验室是否在系统中存在')
+  }
   inputText.value = parts.join('，') || '请帮我完善这条预约草稿'
 }
 
@@ -594,6 +694,11 @@ const fillFromLatestDraft = () => {
     return
   }
 
+  if (!lastDraft.value.labId) {
+    ElMessage.warning('这条草稿里的实验室未匹配成功，请先从列表中重新选择实验室')
+    return
+  }
+
   fillDraftToInput(lastDraft.value)
 }
 
@@ -630,6 +735,7 @@ const handleOpenEvent = (event) => {
 onMounted(() => {
   window.addEventListener('open-ai-assistant', handleOpenEvent)
   loadSessionHistory()
+  refreshLaboratories()
 })
 
 onUnmounted(() => {
