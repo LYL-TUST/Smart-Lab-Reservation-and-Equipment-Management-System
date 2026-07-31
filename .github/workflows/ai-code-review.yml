@@ -8,6 +8,9 @@ on:
 
 jobs:
   review:
+    permissions:           ← 加这三行
+      contents: read
+      pull-requests: write
     runs-on: ubuntu-latest
     # 支持 Python / Java / Vue / JS / TS 多语言审查
 
