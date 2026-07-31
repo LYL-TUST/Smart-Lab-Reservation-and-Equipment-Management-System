@@ -1,0 +1,244 @@
+{
+  "rules_metadata": {
+    "version": "1.0",
+    "description": "AI Code Reviewer 规则引擎 — 基于特征签名的确定性过滤规则",
+    "design_principles": [
+      "不依赖 LLM 输出的语义一致性，只做确定性字段匹配",
+      "宁可漏过，不可误拦（精确率优先）",
+      "每条规则必须有明确的触发条件和动作"
+    ]
+  },
+  "rules": [
+    {
+      "id": "RULE-001",
+      "name": "空/空值描述过滤",
+      "enabled": true,
+      "action": "filter",
+      "description": "如果问题的 description 为空、或仅包含 N/A/None/null 等占位符，直接过滤。这些是 LLM 输出格式正确但内容无价值的占位符。",
+      "conditions": {
+        "type": "field_value",
+        "field": "description",
+        "match_empty": true,
+        "match_values": [
+          "N/A",
+          "n/a",
+          "None",
+          "none",
+          "null",
+          "NULL",
+          "TBD",
+          "tbd"
+        ]
+      }
+    },
+    {
+      "id": "RULE-002",
+      "name": "模棱两可语气过滤",
+      "enabled": true,
+      "action": "filter",
+      "description": "如果问题的 description 包含模糊词语，且严重级别为 suggestion，直接过滤。这些\"建议\"通常没有实际价值。",
+      "conditions": {
+        "type": "severity_and_field_contains",
+        "severity": "suggestion",
+        "field": "description",
+        "keywords": [
+          "Consider",
+          "consider",
+          "Maybe",
+          "maybe",
+          "It might be better",
+          "it might be better",
+          "You could",
+          "you could",
+          "可以考虑",
+          "可能需要",
+          "可以尝试",
+          "might want to"
+        ]
+      }
+    },
+    {
+      "id": "RULE-003",
+      "name": "测试文件问题降级",
+      "enabled": true,
+      "action": "downgrade",
+      "description": "测试文件中的非关键问题降级为 suggestion。测试代码的风格、命名等问题对生产影响较小。",
+      "conditions": {
+        "type": "path_and_severity",
+        "path_patterns": [
+          "test_",
+          "_test.py",
+          "/tests/",
+          "\\tests\\"
+        ],
+        "max_severity": "warning"
+      }
+    },
+    {
+      "id": "RULE-004",
+      "name": "SQL 注入假阳性过滤",
+      "enabled": true,
+      "action": "filter",
+      "description": "如果问题标题涉及 SQL 注入，但同时使用了 ORM 机制（SQLAlchemy 等），判定为 LLM 的经典安全幻觉，直接拦截。",
+      "conditions": {
+        "type": "keyword_conflict",
+        "trigger_keywords": {
+          "fields": [
+            "title",
+            "description"
+          ],
+          "keywords": [
+            "SQL",
+            "sql",
+            "注入",
+            "injection",
+            "SQLAlchemy",
+            "sqlalchemy"
+          ]
+        },
+        "safe_keywords": {
+          "fields": [
+            "title",
+            "description",
+            "code_reference"
+          ],
+          "keywords": [
+            "ORM",
+            "orm",
+            "session.query",
+            "Session.query",
+            "SQLAlchemy",
+            "sqlalchemy",
+            "Base.metadata",
+            "declarative_base"
+          ]
+        },
+        "logic": "if (trigger_keywords match) AND (safe_keywords match) → filter"
+      }
+    },
+    {
+      "id": "RULE-005",
+      "name": "私有函数类型标注宽松",
+      "enabled": true,
+      "action": "downgrade",
+      "description": "如果问题类别是 style 且涉及缺少类型注解，但函数名以 _ 开头（私有函数），降级为 suggestion。私有函数的类型注解收益较低。",
+      "conditions": {
+        "type": "code_pattern",
+        "category": "style",
+        "title_contains": [
+          "missing type",
+          "类型注解",
+          "type annotation",
+          "type hint",
+          "missing return type",
+          "缺少返回类型"
+        ],
+        "code_pattern": "def _+\\w+"
+      }
+    },
+    {
+      "id": "RULE-006",
+      "name": "硬编码凭据假阳性过滤",
+      "enabled": true,
+      "action": "filter",
+      "description": "如果 title 包含「硬编码密码/密钥」但 description 或 code_reference 中存在环境变量引用或配置文件路径，判定为假阳性。",
+      "conditions": {
+        "type": "keyword_conflict",
+        "trigger_keywords": {
+          "fields": [
+            "title",
+            "description"
+          ],
+          "keywords": [
+            "hardcoded",
+            "硬编码",
+            "密码",
+            "password",
+            "secret",
+            "密钥",
+            "credentials",
+            "credential",
+            "token",
+            "api_key"
+          ]
+        },
+        "safe_keywords": {
+          "fields": [
+            "description",
+            "code_reference",
+            "suggestion"
+          ],
+          "keywords": [
+            "os.getenv",
+            "environ.get",
+            "os.environ",
+            "config.get",
+            ".env",
+            "环境变量",
+            "from env",
+            "settings.",
+            "config."
+          ]
+        },
+        "logic": "if (trigger match) AND (safe match) → filter (likely using environment variables properly)"
+      }
+    },
+    {
+      "id": "RULE-007",
+      "name": "Missing null check for mock",
+      "enabled": false,
+      "action": "downgrade",
+      "description": "由反馈飞轮自动生成（dismiss 5 次, category=unknown）",
+      "conditions": {
+        "type": "field_value",
+        "field": "title",
+        "match_empty": false,
+        "match_values": [
+          "missing",
+          "null",
+          "check",
+          "mock",
+          "possible"
+        ]
+      }
+    },
+    {
+      "id": "RULE-008",
+      "name": "SQL injection risk in",
+      "enabled": false,
+      "action": "downgrade",
+      "description": "由反馈飞轮自动生成（dismiss 4 次, category=unknown）",
+      "conditions": {
+        "type": "field_value",
+        "field": "title",
+        "match_empty": false,
+        "match_values": [
+          "sql",
+          "injection",
+          "risk",
+          "user",
+          "input"
+        ]
+      }
+    },
+    {
+      "id": "RULE-009",
+      "name": "Naming convention violation in test",
+      "enabled": false,
+      "action": "downgrade",
+      "description": "由反馈飞轮自动生成（dismiss 3 次, category=unknown）",
+      "conditions": {
+        "type": "field_value",
+        "field": "title",
+        "match_empty": false,
+        "match_values": [
+          "convention",
+          "function",
+          "naming",
+          "violation",
+          "test"
+        ]
+      }
+    }
+  ]
+}
